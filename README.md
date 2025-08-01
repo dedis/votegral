@@ -119,7 +119,7 @@ The peripheral experiments for our paper were conducted on a Macbook Pro.
 
 Running the simulation in the full **`Peripheral`** hardware mode has critical dependencies:
 
--   **Printing**: A **modified version of CUPS** is required for precise performance measurements of the print-to-cut lifecycle. *[Note: Link to the modified source or patch should be provided here if available.]*
+-   **Printing**: A **modified version of CUPS** is required for precise performance measurements of the print-to-cut lifecycle.
 -   **Camera/Scanner**:
     -   **macOS**: `imagesnap` (`brew install imagesnap`).
     -   **Raspberry Pi**: `libcamera-still`.
