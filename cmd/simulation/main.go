@@ -78,14 +78,14 @@ func main() {
 
 func printConsoleSummary(result metrics.AnalysisResult) {
 	fmt.Println("\n-------------------------------------------------")
-	fmt.Printf("--- Average Phase Times (Per Simulation Run) ---\n")
+	fmt.Printf("--- Median Phase Times (Per Simulation Run) ---\n")
 	fmt.Println("-------------------------------------------------")
 
 	phases := []string{"Simulation", "Setup", "Registration", "Voting", "Tally"}
 	for a, phase := range phases {
 		if comp, ok := result.Components[phase]; ok {
 			if summary, ok := comp.Summaries["WallClock"]; ok {
-				fmt.Printf("Average %-18s Time: %s\n", phase, summary.WallClock.Mean)
+				fmt.Printf("Median %-18s Time: %s\n", phase, summary.WallClock.P50)
 				if a == 0 {
 					fmt.Println("-------------------------------------------------")
 				}
