@@ -12,11 +12,14 @@ const (
 	// MaxEnvelopesToPrint is a safety limit to prevent accidentally sending thousands
 	// of jobs to a physical printer during a large simulation run.
 	MaxEnvelopesToPrint = 10
+
+	// MaxEnvelopesToSave same as MaxEnvelopesToPrint but for Disk I/O.
+	MaxEnvelopesToSave = 1_000_000
 )
 
 // SystemType defines the hardware platforms the simulation has been run on.
 // Some hardware platforms have specific logic to operate peripherals
-// successfully, see GetImageCommand()
+// successfully, such as GetImageCommand()
 type SystemType string
 
 const (
@@ -37,61 +40,71 @@ const (
 
 // Config holds all parameters for a simulation instance.
 type Config struct {
-	Voters              uint64
-	FakeCredentialCount uint64
-	Talliers            uint64
-	HardwareType        HardwareType // "Core", "Disk" or "Peripheral"
-	System              SystemType   // The hardware the system is being tested on.
+	Runs     uint64       // Number of times to run the simulation
+	LogLevel log.LogLevel // System logging level (trace, debug, info, error)
 
-	Printer      string // The name of the receipt printer, as named in CUPS
-	PicturePath  string
-	ResultsPath  string
-	CUPSWaitTime int // Wait time for CUPS results in ms
+	// System Parameters
+	Voters              uint64 // Number of voters to simulate
+	FakeCredentialCount uint64 // Number of fake credentials per voter
+	EAMembers           uint64 // Number of entities involved with tallying
 
-	LogLevel     log.LogLevel
-	PrintMetrics bool
-	Seed         string
+	// Peripherals and IO
+	System       SystemType   // The hardware the system is being tested on.
+	HardwareType HardwareType // "Core", "Disk" or "Peripheral"
+	Printer      string       // The name of the receipt printer, as named in CUPS
+	CUPSWaitTime int          // Wait time for CUPS results in ms
+	PicturePath  string       // Path to store pictures (barcodes, QR codes)
+
+	// Metrics Parameters
+	PrintMetrics bool   // Print a tree showing all the recorded metrics
+	MaxDepth     int    // The maximum depth of the metrics tree to print
+	MaxChildren  int    // Maximum number of children to print for each node
+	ResultsPath  string // The path to store the metrics data
+
+	// Crypto parameters
+	Seed string // Seed for deterministic random output
 }
 
 // NewConfig creates a new Config by parsing command-line flags.
 func NewConfig() *Config {
 	log.Debug("Parsing command-line flags...")
-	voters := flag.Uint64("voters", 100, "Number of voters.")
-	fakeCredentials := flag.Uint64("fake-creds", 0, "Number of fake credentials for each voter.")
-	talliers := flag.Uint64("talliers", 4, "Number of election authority members.")
+	runs := flag.Uint64("runs", 2, "Number of times to run the simulation.")
+	voters := flag.Uint64("voters", 100, "Number of voters to simulate (registration + voting).")
+	fakeCredentials := flag.Uint64("fake-creds", 1, "Number of fake credentials for each voter.")
+	eaMembers := flag.Uint64("ea-members", 4, "Number of election authority members.")
+	system := flag.String("system", "Mac", "System tag (Mac, Kiosk, Pi, Xeon) for logging and system-level logic.")
 	hwType := flag.String("hw", "Core", "Hardware implementation (Core, Disk, Peripherals).")
-	system := flag.String("system", "Mac", "System tag for logging (Mac, Kiosk, Pi, Xeon).")
-	logLevel := flag.String("log-level", "info", "Set log level (trace, debug, info, error).")
-	seed := flag.String("seed", "votegral", "Seed value for all randomly generated values.")
 	printer := flag.String("printer", "TM", "Name of the printer in CUPS if Peripheral is set.")
+	cupsWait := flag.Int("cups-wait", 100, "Wait time in ms for CUPS daemon to start.")
 	picPath := flag.String("pics", "output/pics/", "Path for storing pictures of physical materials.")
 	resultsPath := flag.String("results", "output/results/", "Path for storing simulation results.")
-	printMetrics := flag.Bool("print-metrics", false, "Whether to print detailed metrics during execution.")
-	cupsWait := flag.Int("cups-wait", 100, "Wait time in ms for CUPS daemon to start.")
-
+	printMetrics := flag.Bool("print-metrics", false, "Whether to print detailed metrics tree at the end.")
+	maxDepth := flag.Int("max-depth", 2, "Maximum depth of the metrics tree to print")
+	maxChildren := flag.Int("max-children", 10, "Maximum number of children to print for each node")
+	seed := flag.String("seed", "votegral", "Seed for deterministic random output.")
+	logLevel := flag.String("log-level", "info", "Set log level (trace, debug, info, error).")
 	flag.Parse()
 
-	// Set Log Level
 	setLogLevel(*logLevel)
 
-	// Clean And Create Directory
 	picPathClean := cleanAndCreateDirectory(*picPath)
 	resultsPathClean := cleanAndCreateDirectory(*resultsPath)
 
 	config := &Config{
+		Runs:                *runs,
 		Voters:              *voters,
 		FakeCredentialCount: *fakeCredentials,
-		Talliers:            *talliers,
+		EAMembers:           *eaMembers,
 		System:              SystemType(*system),
 		HardwareType:        HardwareType(*hwType),
-
-		Printer:     *printer,
-		PicturePath: picPathClean,
-		ResultsPath: resultsPathClean,
-
-		CUPSWaitTime: *cupsWait,
-		PrintMetrics: *printMetrics,
-		Seed:         *seed,
+		Printer:             *printer,
+		CUPSWaitTime:        *cupsWait,
+		PicturePath:         picPathClean,
+		PrintMetrics:        *printMetrics,
+		MaxDepth:            *maxDepth,
+		MaxChildren:         *maxChildren,
+		ResultsPath:         resultsPathClean,
+		Seed:                *seed,
 	}
 	log.Debug("Config: %s", config)
 	return config
@@ -121,18 +134,12 @@ func (c *Config) GetPrintCommand(filePath string, cut bool) (string, []string) {
 
 // String returns a string representation of the Config instance
 func (c *Config) String() string {
-	return fmt.Sprintf("Config{Voters:%d FakeCredentials:%d Talliers:%d System:%s "+
-		"HW:%s Printer:%s PicPath:%s ResultsPath:%s CUPSWait:%d LogLevel:%d "+
-		"PrintMetrics:%t Seeded:%s}",
-		c.Voters, c.FakeCredentialCount, c.Talliers, c.System, c.HardwareType,
-		c.Printer, c.PicturePath, c.ResultsPath, c.CUPSWaitTime,
-		c.LogLevel, c.PrintMetrics, c.Seed)
+	return fmt.Sprintf("Config%+v", *c)
 }
 
 // --- Config Helpers ---
 
 // cleanAndCreateDirectory ensures the specified directory exists by and creating it if necessary.
-// It returns the filepath.
 func cleanAndCreateDirectory(path string) string {
 	path = filepath.Clean(path)
 	if err := os.MkdirAll(path, 0755); err != nil {

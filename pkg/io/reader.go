@@ -12,6 +12,7 @@ import (
 	"time"
 	"votegral/pkg/context"
 	"votegral/pkg/log"
+	"votegral/pkg/metrics"
 
 	"github.com/makiuchi-d/gozxing"
 	"github.com/makiuchi-d/gozxing/oned"
@@ -35,12 +36,12 @@ func NewCoreReader(store map[string]Code) *CoreReader {
 
 // Read retrieves a code from the in-memory map.
 func (r *CoreReader) Read(ctx *context.OperationContext, storage CodeStorage, codeType CodeType) (Code, error) {
-	randData := storage.Load(codeType)
-	if randData == "" {
-		return nil, fmt.Errorf("no file path found in storage for code type %v", codeType)
+	serializedData := storage.Load(codeType)
+	if serializedData == "" {
+		return nil, fmt.Errorf("no data found in storage for code type %v", codeType)
 	}
 
-	return r.store[randData], nil
+	return r.store[serializedData], nil
 }
 
 // --- PicReader (Reads from file) ---
@@ -57,7 +58,7 @@ func NewPicReader(cfg *config.Config) *PicReader {
 
 func (r *PicReader) Read(ctx *context.OperationContext, storage CodeStorage, codeType CodeType) (Code, error) {
 	var code Code
-	err := ctx.Recorder.Record("IO_PicReader.Read", func() error {
+	err := ctx.Recorder.Record("ReadFile_"+codeType.String(), metrics.MDiskRead, func() error {
 		filePath := storage.Load(codeType)
 		if filePath == "" {
 			return fmt.Errorf("no file path found in storage for code type %v", codeType)
@@ -197,7 +198,7 @@ func NewCamReader(cfg *config.Config) *CamReader {
 
 // Read first takes a picture, then delegates to the PicReader.
 func (cr *CamReader) Read(ctx *context.OperationContext, storage CodeStorage, codeType CodeType) (Code, error) {
-	_ = ctx.Recorder.Record("IO_CamReader.TakePicture", func() error {
+	_ = ctx.Recorder.Record("TakePicture_"+codeType.String(), metrics.MHardwareRead, func() error {
 		scannedFile := cr.takePicture()
 		storage.Save(codeType, scannedFile)
 		return nil
@@ -207,7 +208,6 @@ func (cr *CamReader) Read(ctx *context.OperationContext, storage CodeStorage, co
 
 // takePicture executes an external command to capture an image.
 func (cr *CamReader) takePicture() string {
-	// Where to save the file.
 	scannedFile := fmt.Sprintf("%s/image_%d.jpg", cr.cfg.PicturePath, time.Now().UnixNano())
 	cmdName, args := cr.cfg.GetImageCommand(scannedFile)
 

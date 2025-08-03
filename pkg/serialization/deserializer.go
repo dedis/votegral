@@ -7,15 +7,18 @@ import (
 	"io"
 )
 
+// Deserializer is a utility for reading and decoding data from a byte stream.
 type Deserializer struct {
 	r   *bytes.Reader
 	err error
 }
 
+// NewDeserializer creates a new Deserializer instance for reading and decoding data from the provided byte slice.
 func NewDeserializer(data []byte) *Deserializer {
 	return &Deserializer{r: bytes.NewReader(data)}
 }
 
+// Read reads the exact number of bytes into p from the underlying reader
 func (d *Deserializer) Read(p []byte) {
 	if d.err != nil {
 		return
@@ -23,6 +26,7 @@ func (d *Deserializer) Read(p []byte) {
 	_, d.err = io.ReadFull(d.r, p)
 }
 
+// ReadUint64 reads an unsigned 64-bit integer from the underlying byte stream in BigEndian order.
 func (d *Deserializer) ReadUint64() uint64 {
 	if d.err != nil {
 		return 0
@@ -32,6 +36,7 @@ func (d *Deserializer) ReadUint64() uint64 {
 	return u
 }
 
+// ReadKyber reads and unmarshals the provided kyber.Marshaling objects from the underlying byte stream.
 func (d *Deserializer) ReadKyber(obj ...kyber.Marshaling) {
 	if d.err != nil {
 		return

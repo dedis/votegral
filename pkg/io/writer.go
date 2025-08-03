@@ -18,7 +18,7 @@ import (
 	"time"
 	"votegral/pkg/config"
 	"votegral/pkg/context"
-	"votegral/pkg/crypto"
+	"votegral/pkg/metrics"
 )
 
 const (
@@ -44,13 +44,14 @@ func NewCoreWriter(store map[string]Code) *CoreWriter {
 
 // Write stores a code in the in-memory map.
 func (w *CoreWriter) Write(ctx *context.OperationContext, storage CodeStorage, code Code, cut bool) error {
-	randPoint := crypto.Suite.Scalar().Pick(crypto.RandomStream)
-	randData := randPoint.String()
-
 	// Save the object as (key, value) store
-	w.store[randData] = code
+	serializedData, err := code.Serialize()
+	if err != nil {
+		return fmt.Errorf("failed to serialize code type %v: %w", code.Type(), err)
+	}
+	w.store[string(serializedData)] = code
 
-	storage.Save(code.Type(), randData)
+	storage.Save(code.Type(), string(serializedData))
 
 	return nil
 }
@@ -70,7 +71,7 @@ func NewSaveWriter(cfg *config.Config) *SaveWriter {
 
 // Write orchestrates serializing, encoding, and saving a code to a PDF file.
 func (w *SaveWriter) Write(ctx *context.OperationContext, storage CodeStorage, code Code, cut bool) error {
-	return ctx.Recorder.Record("IO_SaveWriter.Write", func() error {
+	return ctx.Recorder.Record("SaveFile_"+code.Type().String(), metrics.MDiskWrite, func() error {
 		// 1. Generate the image of the code.
 		img, err := w.generateCodeImage(code)
 		if err != nil {
@@ -152,7 +153,7 @@ func (w *PrinterWriter) Write(ctx *context.OperationContext, storage CodeStorage
 	}
 
 	// Then, record the performance of the printing operation.
-	return ctx.Recorder.Record("IO_PrinterWriter.Print", func() error {
+	return ctx.Recorder.Record("Print_"+code.Type().String(), metrics.MHardwareWrite, func() error {
 		filePath := storage.Load(code.Type())
 		return w.printFile(filePath, cut)
 	})

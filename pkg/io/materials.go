@@ -48,3 +48,23 @@ func (m *VotingMaterials) Save(codeType CodeType, location string) {
 func (m *VotingMaterials) Load(codeType CodeType) string {
 	return m.qrCodeStorage[codeType]
 }
+
+// --- SimpleStorage ---
+
+// SimpleStorage is a minimal, map-based implementation of the io.CodeStorage interface.
+// It's used as a temporary object to capture the output of a Write operation.
+type SimpleStorage struct {
+	paths map[CodeType]string
+}
+
+func NewSimpleStorage() *SimpleStorage {
+	return &SimpleStorage{paths: make(map[CodeType]string)}
+}
+
+func (s *SimpleStorage) Save(codeType CodeType, location string) {
+	s.paths[codeType] = location
+}
+
+func (s *SimpleStorage) Load(codeType CodeType) string {
+	return s.paths[codeType]
+}

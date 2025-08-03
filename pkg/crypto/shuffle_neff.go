@@ -7,6 +7,7 @@ import (
 	"go.dedis.ch/kyber/v3/shuffle"
 	"votegral/pkg/context"
 	"votegral/pkg/log"
+	"votegral/pkg/metrics"
 	"votegral/pkg/serialization"
 )
 
@@ -28,22 +29,32 @@ type SequenceShuffleResult struct {
 // ShuffleElGamalCiphertexts shuffles a list of ElGamal ciphertexts by each tallier.
 func ShuffleElGamalCiphertexts(ctx *context.OperationContext, eaPK kyber.Point, ciphertexts []*ElGamalCiphertext) ([]*SingleShuffleResult, error) {
 	currentInputC1s, currentInputC2s := ExtractElGamalComponents(ciphertexts)
-	shuffleChain := make([]*SingleShuffleResult, ctx.Config.Talliers)
+	shuffleChain := make([]*SingleShuffleResult, ctx.Config.EAMembers)
 
-	for i := uint64(0); i < ctx.Config.Talliers; i++ {
+	for i := uint64(0); i <= ctx.Config.EAMembers; i++ {
 		if i > 0 {
 			// Verify the previous tallier's shuffle
 			previousResult := shuffleChain[i-1]
 
 			log.Debug("Tallier %d verifying work of tallier %d...", i, i-1)
-			verifier := shuffle.Verifier(
-				Suite, nil, eaPK,
-				currentInputC1s, currentInputC2s, // Input to shuffle i-1
-				previousResult.ShuffledC1s, previousResult.ShuffledC2s, // Output of shuffle i-1
-			)
-			err := proof.HashVerify(Suite, "SingleShuffle", verifier, previousResult.Proof)
-			if err != nil {
-				return nil, fmt.Errorf("tallier %d failed to verify previous shuffle: %w", i+1, err)
+			if err := ctx.Recorder.Record("ShuffleVerify", metrics.MLogic, func() error {
+				verifier := shuffle.Verifier(
+					Suite, nil, eaPK,
+					currentInputC1s, currentInputC2s, // Input to shuffle i-1
+					previousResult.ShuffledC1s, previousResult.ShuffledC2s, // Output of shuffle i-1
+				)
+				err := proof.HashVerify(Suite, "SingleShuffle", verifier, previousResult.Proof)
+				if err != nil {
+					return fmt.Errorf("tallier %d failed to verify previous shuffle: %w", i+1, err)
+				}
+				return nil
+			}); err != nil {
+				return nil, err
+			}
+
+			// Finish after verifying the last tallier's output
+			if i == ctx.Config.EAMembers {
+				return shuffleChain, nil
 			}
 
 			currentInputC1s = previousResult.ShuffledC1s
@@ -53,23 +64,30 @@ func ShuffleElGamalCiphertexts(ctx *context.OperationContext, eaPK kyber.Point, 
 		}
 
 		log.Debug("Tallier %d performing shuffle...", i)
-		shuffledC1, shuffledC2, prover := shuffle.Shuffle(
-			Suite, nil, eaPK, currentInputC1s, currentInputC2s, RandomStream,
-		)
+		if err := ctx.Recorder.Record("Shuffle", metrics.MLogic, func() error {
+			shuffledC1, shuffledC2, prover := shuffle.Shuffle(
+				Suite, nil, eaPK, currentInputC1s, currentInputC2s, RandomStream,
+			)
 
-		proofBytes, err := proof.HashProve(Suite, "SingleShuffle", prover)
-		if err != nil {
-			return nil, fmt.Errorf("tallier %d failed to generate proof: %w", i, err)
+			proofBytes, err := proof.HashProve(Suite, "SingleShuffle", prover)
+			if err != nil {
+				return fmt.Errorf("tallier %d failed to generate proof: %w", i, err)
+			}
+
+			shuffleChain[i] = &SingleShuffleResult{
+				ShuffledC1s: shuffledC1,
+				ShuffledC2s: shuffledC2,
+				Proof:       proofBytes,
+			}
+
+			return nil
+		}); err != nil {
+			return nil, err
 		}
 
-		shuffleChain[i] = &SingleShuffleResult{
-			ShuffledC1s: shuffledC1,
-			ShuffledC2s: shuffledC2,
-			Proof:       proofBytes,
-		}
 		log.Debug("Tallier %d shuffle complete", i)
 	}
-	return shuffleChain, nil
+	return nil, fmt.Errorf("should not have been reached")
 }
 
 // ShuffleElGamalSequences shuffles multiple ElGamal ciphertexts by each tallier.
@@ -79,10 +97,10 @@ func ShuffleElGamalSequences(
 	initialX, initialY [][]kyber.Point,
 ) ([]*SequenceShuffleResult, error) {
 
-	shuffleChain := make([]*SequenceShuffleResult, ctx.Config.Talliers)
+	shuffleChain := make([]*SequenceShuffleResult, ctx.Config.EAMembers)
 	currentInputX, currentInputY := initialX, initialY
 
-	for i := uint64(0); i < ctx.Config.Talliers; i++ {
+	for i := uint64(0); i <= ctx.Config.EAMembers; i++ {
 		tallierID := i + 1
 		log.Debug("Tallier %d beginning work...", tallierID)
 
@@ -90,11 +108,21 @@ func ShuffleElGamalSequences(
 			previousResult := shuffleChain[i-1]
 			log.Debug("Tallier %d verifying work of tallier %d...", tallierID, i)
 
-			err := verifySequenceShuffle(eaPk, currentInputX, currentInputY, previousResult)
-			if err != nil {
-				return nil, fmt.Errorf("verification of tallier %d's sequence shuffle FAILED: %w", i, err)
+			if err := ctx.Recorder.Record("ShuffleVerify", metrics.MLogic, func() error {
+				err := verifySequenceShuffle(eaPk, currentInputX, currentInputY, previousResult)
+				if err != nil {
+					return fmt.Errorf("verification of tallier %d's sequence shuffle FAILED: %w", i, err)
+				}
+				log.Debug("Verification of tallier %d's work successful.", i)
+				return nil
+			}); err != nil {
+				return nil, err
 			}
-			log.Debug("Verification of tallier %d's work successful.", i)
+
+			// Finish after verifying the last tallier's output
+			if i == ctx.Config.EAMembers {
+				return shuffleChain, nil
+			}
 
 			currentInputX = previousResult.ShuffledC1s
 			currentInputY = previousResult.ShuffledC2s
@@ -102,16 +130,21 @@ func ShuffleElGamalSequences(
 			log.Debug("Skipping verification of previous shuffle for tallier %d", i+1)
 		}
 
-		newResult, err := performSequenceShuffle(ctx, eaPk, currentInputX, currentInputY)
-		if err != nil {
-			return nil, fmt.Errorf("tallier %d failed to perform its shuffle: %w", tallierID, err)
+		if err := ctx.Recorder.Record("Shuffle", metrics.MLogic, func() error {
+			newResult, err := performSequenceShuffle(ctx, eaPk, currentInputX, currentInputY)
+			if err != nil {
+				return fmt.Errorf("tallier %d failed to perform its shuffle: %w", tallierID, err)
+			}
+			shuffleChain[i] = newResult
+			return nil
+		}); err != nil {
+			return nil, err
 		}
 
-		shuffleChain[i] = newResult
 		log.Debug("Tallier %d finished and published its result.", tallierID)
 	}
 
-	return shuffleChain, nil
+	return nil, fmt.Errorf("should not have been reached")
 }
 
 // performSequenceShuffle encapsulates the logic for a single tallier's sequence shuffle and proof generation.

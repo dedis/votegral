@@ -7,7 +7,7 @@ import (
 	"io"
 )
 
-// ElGamalCiphertext holds the public components of an ElGamal encryption.
+// ElGamalCiphertext holds the public components of ElGamal encryption.
 type ElGamalCiphertext struct {
 	C1 kyber.Point // Ephemeral part 1: x * G
 	C2 kyber.Point // Blinded message:  m + X
@@ -77,9 +77,7 @@ func (ct *ElGamalCiphertext) MultiKeyDecryptWithProof(shares []*DKGShare) (kyber
 		}
 	}
 
-	var finalDec = partialDec.C2
-
-	return finalDec, decProofs, nil
+	return partialDec.C2, decProofs, nil
 }
 
 // Equal compares two ElGamalCiphertext instances and returns an error if they do not match in any of their components.

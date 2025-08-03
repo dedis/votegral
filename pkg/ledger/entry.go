@@ -24,7 +24,6 @@ func RegistrationForKioskSig(VoterID uint64, C1, C2 kyber.Point) ([]byte, error)
 }
 
 // RegistrationForOfficialSig generates the byte slice that the Official counter-signs.
-// This includes the Kiosk's signature.
 func RegistrationForOfficialSig(VoterID uint64, C1, C2 kyber.Point, KioskSig []byte) ([]byte, error) {
 	kioskMsg, err := RegistrationForKioskSig(VoterID, C1, C2)
 	if err != nil {
@@ -67,6 +66,7 @@ type EnvelopeEntry struct {
 	IsUsed         bool
 }
 
+// CredentialEntry represents a single credential entry posted by the election authority to authorize the credential for voting.
 type CredentialEntry struct {
 	CredPk kyber.Point
 }
@@ -95,7 +95,6 @@ func (v *VotingEntry) SignPayload() ([]byte, error) {
 }
 
 // Sign creates a Schnorr signature for the serialized VotingEntry payload using the given private key.
-// Updates the VoteSig field with the generated signature.
 func (v *VotingEntry) Sign(sk kyber.Scalar) error {
 	msg, err := v.SignPayload()
 	if err != nil {

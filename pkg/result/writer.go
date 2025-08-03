@@ -10,8 +10,6 @@ import (
 	"time"
 	"votegral/pkg/config"
 	"votegral/pkg/metrics"
-
-	"gonum.org/v1/gonum/stat"
 )
 
 // Writer is responsible for creating and writing result files.
@@ -20,98 +18,44 @@ type Writer struct {
 	system      config.SystemType
 	hwName      string
 	runs        uint64
+	voters      uint64
 }
 
 // NewWriter creates a new writer for result files.
-func NewWriter(resultsPath string, system config.SystemType, hwName string, runs uint64) *Writer {
+func NewWriter(resultsPath string, system config.SystemType, hwName string, runs uint64, voters uint64) *Writer {
 	return &Writer{
 		resultsPath: resultsPath,
 		system:      system,
 		hwName:      hwName,
 		runs:        runs,
+		voters:      voters,
 	}
 }
 
-// WriteAllResults is the main entry point that generates and writes all result files.
-func (w *Writer) WriteAllResults(metrics map[string]*metrics.AggregatedMetrics) error {
-	// Create the results directory if it doesn't exist.
+// WriteAllResults writes the analysis results to files, including statistical and raw debug data, in the specified directory.
+func (w *Writer) WriteAllResults(result metrics.AnalysisResult) error {
 	if err := os.MkdirAll(w.resultsPath, 0755); err != nil {
 		return fmt.Errorf("could not create results directory %s: %w", w.resultsPath, err)
 	}
 
-	if err := w.writeRawResults(metrics); err != nil {
-		return fmt.Errorf("failed to write raw results: %w", err)
-	}
-	if err := w.writeStatResults(metrics); err != nil {
+	if err := w.writeStatResults(result); err != nil {
 		return fmt.Errorf("failed to write statistical results: %w", err)
+	}
+	if err := w.writeRawResults(result.Recorders); err != nil {
+		return fmt.Errorf("failed to write raw debug results: %w", err)
 	}
 	return nil
 }
 
 // generateFilename creates a standardized filename for a result file.
-// Example: RAW_S_Mac_C_Disk_R_100_T_2025-01-02-15-04-05.csv
 func (w *Writer) generateFilename(fileType string) string {
-	timestamp := time.Now().Format("2025-01-02-15-04-05")
-	base := fmt.Sprintf("%s_S%s_C%s_R%d_T%s.csv",
-		fileType,
-		w.system,
-		w.hwName,
-		w.runs,
-		timestamp,
-	)
+	timestamp := time.Now().Format("2006-01-02-15-04-05")
+	base := fmt.Sprintf("%s_S%s_C%s_V%d_R%d_T%s.csv", fileType, w.system, w.hwName, w.voters, w.runs, timestamp)
 	return filepath.Join(w.resultsPath, base)
 }
 
-// writeRawResults saves the raw execution time for every operation in every run.
-func (w *Writer) writeRawResults(allMetrics map[string]*metrics.AggregatedMetrics) error {
-	filePath := w.generateFilename("RAW")
-	file, err := os.Create(filePath)
-	if err != nil {
-		return fmt.Errorf("could not create raw results file %s: %w", filePath, err)
-	}
-	defer file.Close()
-
-	csvWriter := csv.NewWriter(file)
-	defer csvWriter.Flush()
-
-	header := []string{"Component", "MetricType", "ExecutionTime_us"}
-	if err := csvWriter.Write(header); err != nil {
-		return fmt.Errorf("failed to write CSV header to %s: %w", filePath, err)
-	}
-
-	components := getSortedKeys(allMetrics)
-
-	for _, componentName := range components {
-		aggMetrics := allMetrics[componentName]
-
-		// Write Wall Clock times
-		for _, t := range aggMetrics.WallClocks {
-			row := []string{componentName, "WallClock", fmt.Sprintf("%d", t.Microseconds())}
-			if err := csvWriter.Write(row); err != nil {
-				return fmt.Errorf("failed to write row to %s: %w", filePath, err)
-			}
-		}
-		// Write User CPU times
-		for _, t := range aggMetrics.UserTimes {
-			row := []string{componentName, "UserTime", fmt.Sprintf("%d", t.Microseconds())}
-			if err := csvWriter.Write(row); err != nil {
-				return fmt.Errorf("failed to write row to %s: %w", filePath, err)
-			}
-		}
-		// Write System CPU times
-		for _, t := range aggMetrics.SystemTimes {
-			row := []string{componentName, "SystemTime", fmt.Sprintf("%d", t.Microseconds())}
-			if err := csvWriter.Write(row); err != nil {
-				return fmt.Errorf("failed to write row to %s: %w", filePath, err)
-			}
-		}
-	}
-	fmt.Printf("Raw results written to %s\n", filePath)
-	return nil
-}
-
-// writeStatResults calculates and saves summary statistics for each component.
-func (w *Writer) writeStatResults(allMetrics map[string]*metrics.AggregatedMetrics) error {
+// writeStatResults writes statistical analysis results into a CSV file for each component and derived metric.
+func (w *Writer) writeStatResults(result metrics.AnalysisResult) error {
 	filePath := w.generateFilename("STATS")
 	file, err := os.Create(filePath)
 	if err != nil {
@@ -122,97 +66,115 @@ func (w *Writer) writeStatResults(allMetrics map[string]*metrics.AggregatedMetri
 	csvWriter := csv.NewWriter(file)
 	defer csvWriter.Flush()
 
-	header := []string{"Component", "MetricType", "Mean_us", "Median_us", "Min_us", "Max_us", "P5_us", "P95_us"}
+	header := []string{"Component", "DerivedMetric", "TimeType", "Count", "Mean_us", "Median_us", "Min_us", "Max_us", "P95_us"}
 	if err := csvWriter.Write(header); err != nil {
-		return fmt.Errorf("failed to write CSV header to %s: %w", filePath, err)
+		return err
 	}
 
-	components := getSortedKeys(allMetrics)
+	components := make([]string, 0, len(result.Components))
+	for k := range result.Components {
+		components = append(components, k)
+	}
+	sort.Strings(components)
 
-	for _, componentName := range components {
-		aggMetrics := allMetrics[componentName]
+	for _, compName := range components {
+		compResult := result.Components[compName]
 
-		// Calculate and write stats for each metric type (Wall, User, System)
-		if err := writeStatsRow(csvWriter, componentName, "WallClock", aggMetrics.WallClocks); err != nil {
-			return err
+		derivedMetrics := make([]string, 0, len(compResult.Summaries))
+		for k := range compResult.Summaries {
+			derivedMetrics = append(derivedMetrics, k)
 		}
-		if err := writeStatsRow(csvWriter, componentName, "UserTime", aggMetrics.UserTimes); err != nil {
-			return err
-		}
-		if err := writeStatsRow(csvWriter, componentName, "SystemTime", aggMetrics.SystemTimes); err != nil {
-			return err
+		sort.Strings(derivedMetrics)
+
+		for _, derivedName := range derivedMetrics {
+			summaries := compResult.Summaries[derivedName]
+
+			// Write a block of rows for each derived metric: one for WallClock, one for User, one for System.
+			if err := writeStatsRow(csvWriter, compName, derivedName, "WallClock", summaries.WallClock); err != nil {
+				return err
+			}
+			if err := writeStatsRow(csvWriter, compName, derivedName, "UserTime", summaries.User); err != nil {
+				return err
+			}
+			if err := writeStatsRow(csvWriter, compName, derivedName, "SystemTime", summaries.System); err != nil {
+				return err
+			}
 		}
 	}
 	fmt.Printf("Statistical results written to %s\n", filePath)
 	return nil
 }
 
-// writeStatsRow calculates statistics for a set of durations and writes them to a CSV row.
-func writeStatsRow(writer *csv.Writer, component, metricType string, durations []time.Duration) error {
-	if len(durations) == 0 {
+// writeStatsRow writes a single row of statistical summary data to the provided CSV writer.
+func writeStatsRow(writer *csv.Writer, component, derivedMetric, timeType string, summary metrics.StatSummary) error {
+	if summary.Count == 0 {
 		return nil
 	}
-
-	floats := convertDurationsToFloats(durations)
-
-	sort.Float64s(floats)
-
-	mean := stat.Mean(floats, nil)
-	median := stat.Quantile(0.5, stat.Empirical, floats, nil)
-	p5 := stat.Quantile(0.05, stat.Empirical, floats, nil)
-	p95 := stat.Quantile(0.95, stat.Empirical, floats, nil)
-
-	min, max := minMaxDuration(durations)
-
 	row := []string{
 		component,
-		metricType,
-		strconv.FormatFloat(mean, 'f', -1, 64),
-		strconv.FormatFloat(median, 'f', -1, 64),
-		strconv.FormatInt(min.Microseconds(), 10),
-		strconv.FormatInt(max.Microseconds(), 10),
-		strconv.FormatFloat(p5, 'f', -1, 64),
-		strconv.FormatFloat(p95, 'f', -1, 64),
+		derivedMetric,
+		timeType,
+		strconv.Itoa(summary.Count),
+		strconv.FormatInt(summary.Mean.Microseconds(), 10),
+		strconv.FormatInt(summary.P50.Microseconds(), 10),
+		strconv.FormatInt(summary.Min.Microseconds(), 10),
+		strconv.FormatInt(summary.Max.Microseconds(), 10),
+		strconv.FormatInt(summary.P95.Microseconds(), 10),
+	}
+	return writer.Write(row)
+}
+
+// writeRawResults dumps every single measurement from every run
+func (w *Writer) writeRawResults(recorders []*metrics.Recorder) error {
+	filePath := w.generateFilename("RAW")
+	file, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("could not create raw debug results file %s: %w", filePath, err)
+	}
+	defer file.Close()
+
+	csvWriter := csv.NewWriter(file)
+	defer csvWriter.Flush()
+
+	header := []string{"RunIndex", "UniqueName", "ConceptualName", "Depth", "Type", "InclusiveWall_us", "InclusiveUser_us", "InclusiveSys_us"}
+	if err := csvWriter.Write(header); err != nil {
+		return err
 	}
 
-	if err := writer.Write(row); err != nil {
-		return fmt.Errorf("failed to write stats row for %s (%s): %w", component, metricType, err)
+	for i, recorder := range recorders {
+		allMeasurements := make([]*metrics.Measurement, 0)
+		var collectAll func(m *metrics.Measurement)
+		collectAll = func(m *metrics.Measurement) {
+			allMeasurements = append(allMeasurements, m)
+			for _, child := range m.Children {
+				collectAll(child)
+			}
+		}
+		for _, root := range recorder.RootMeasurements() {
+			collectAll(root)
+		}
+
+		sort.Slice(allMeasurements, func(i, j int) bool {
+			return allMeasurements[i].UniqueName < allMeasurements[j].UniqueName
+		})
+
+		for _, m := range allMeasurements {
+			row := []string{
+				strconv.Itoa(i),
+				m.UniqueName,
+				m.ConceptualName,
+				strconv.Itoa(m.Depth),
+				m.Type.String(),
+				strconv.FormatInt(m.Inclusive.WallClock.Microseconds(), 10),
+				strconv.FormatInt(m.Inclusive.UserTime.Microseconds(), 10),
+				strconv.FormatInt(m.Inclusive.SystemTime.Microseconds(), 10),
+			}
+			if err := csvWriter.Write(row); err != nil {
+				return err
+			}
+		}
 	}
+
+	fmt.Printf("Raw debug results written to %s\n", filePath)
 	return nil
-}
-
-// getSortedKeys extracts keys from a map and returns them sorted alphabetically.
-func getSortedKeys(m map[string]*metrics.AggregatedMetrics) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-// convertDurationsToFloats converts a slice of time.Duration to a slice of float64 (in microseconds).
-func convertDurationsToFloats(d []time.Duration) []float64 {
-	floats := make([]float64, len(d))
-	for i, v := range d {
-		floats[i] = float64(v.Microseconds())
-	}
-	return floats
-}
-
-// minMaxDuration finds the minimum and maximum duration in a slice.
-func minMaxDuration(d []time.Duration) (min, max time.Duration) {
-	if len(d) == 0 {
-		return 0, 0
-	}
-	min, max = d[0], d[0]
-	for _, v := range d[1:] {
-		if v < min {
-			min = v
-		}
-		if v > max {
-			max = v
-		}
-	}
-	return min, max
 }

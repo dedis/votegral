@@ -25,20 +25,6 @@ func (c *SignAsymmetricCredential) String() string {
 	return fmt.Sprintf("SignAsymmetricCredential{Sk: %s, Pk: %s}", c.private, c.public)
 }
 
-// EncAsymmetricCredential represents an asymmetric key pair used for encryption.
-type EncAsymmetricCredential struct {
-	private kyber.Scalar
-	public  kyber.Point
-}
-
-func NewEncAsymmetricCredential() (*EncAsymmetricCredential, error) {
-	private := Suite.Scalar().Pick(RandomStream)
-	public := Suite.Point().Mul(private, nil)
-	return &EncAsymmetricCredential{private: private, public: public}, nil
-}
-func (c *EncAsymmetricCredential) PrivateKey() kyber.Scalar { return c.private }
-func (c *EncAsymmetricCredential) PublicKey() kyber.Point   { return c.public }
-
 // --- Symmetric Credentials ---
 
 // SignSymmetricCredential holds a secret key for symmetric operations like HMAC.

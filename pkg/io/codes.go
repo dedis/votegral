@@ -20,6 +20,23 @@ const (
 	ResponseQRType
 )
 
+func (ct CodeType) String() string {
+	switch ct {
+	case CheckInBarcodeType:
+		return "CheckInBarcode"
+	case CommitQRType:
+		return "Commit"
+	case EnvelopeQRType:
+		return "Envelope"
+	case CheckOutQRType:
+		return "Checkout"
+	case ResponseQRType:
+		return "Response"
+	default:
+		return "Unknown"
+	}
+}
+
 // Code is the base interface for all scannable codes.
 type Code interface {
 	// Type returns the specific type of the code.
@@ -247,24 +264,4 @@ func (r *ResponseQR) Deserialize(data []byte) error {
 	s.ReadKyber(r.CredentialSK, r.ZKPResponse, r.KioskPK)
 	r.KioskSigma = s.ReadBytes()
 	return s.Err()
-}
-
-// --- ResponseQR ---
-
-// SimpleStorage is a minimal, map-based implementation of the io.CodeStorage interface.
-// It's used as a temporary object to capture the output of a Write operation.
-type SimpleStorage struct {
-	paths map[CodeType]string
-}
-
-func NewSimpleStorage() *SimpleStorage {
-	return &SimpleStorage{paths: make(map[CodeType]string)}
-}
-
-func (s *SimpleStorage) Save(codeType CodeType, location string) {
-	s.paths[codeType] = location
-}
-
-func (s *SimpleStorage) Load(codeType CodeType) string {
-	return s.paths[codeType]
 }

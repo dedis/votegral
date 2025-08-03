@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"math/rand"
-	"time"
+	"os"
 	"votegral/pkg/actors"
 	"votegral/pkg/config"
 	"votegral/pkg/context"
@@ -22,10 +22,11 @@ import (
 // and shared state like the ledger.
 type Simulation struct {
 	config   *config.Config
+	metrics  *metrics.Recorder
 	ea       *actors.ElectionAuthority
 	official *actors.ElectionOfficial
 	printer  *actors.EnvelopePrinter
-	kiosk    *actors.RegistrationKiosk
+	kiosk    *actors.Kiosk
 	voters   []*actors.Voter
 	ledger   *ledger.Ledger
 	hw       hardware.Hardware
@@ -35,63 +36,76 @@ func main() {
 	// 1. Load configuration from flags.
 	cfg := config.NewConfig()
 
-	// 2. Initialize the simulation environment.
-	sim, err := NewSimulation(cfg)
-	if err != nil {
-		log.Fatalf("Failed to initialize simulation: %v", err)
+	analyzer := metrics.NewAnalyzer()
+
+	for run := uint64(0); run < cfg.Runs; run++ {
+		log.Info("----- Starting run %d of %d -----", run+1, cfg.Runs)
+
+		rec := metrics.NewRecorder()
+
+		// Initialize the simulation environment.
+		sim, err := NewSimulation(cfg, rec)
+		if err != nil {
+			log.Fatalf("Failed to initialize simulation: %v", err)
+		}
+
+		// Run the simulation
+		if err = sim.metrics.Record("Simulation", metrics.MLogic, func() error {
+			return sim.Run()
+		}); err != nil {
+			log.Fatalf("Failed to run simulation: %v", err)
+		}
+
+		if cfg.PrintMetrics {
+			rec.PrintTree(os.Stdout, cfg.MaxDepth, cfg.MaxChildren)
+		}
+
+		// Add measurements to the analyzer
+		analyzer.Add(rec)
 	}
 
-	// 3. Run the simulation.
-	var runMetrics map[string]*metrics.AggregatedMetrics
-	var tally *protocol.TallyOutput
-	totalTimeRecorder := metrics.NewRecorder(cfg.PrintMetrics)
-	if err = totalTimeRecorder.Record("TotalTime", func() error {
-		runMetrics, tally, err = sim.Run()
-		return err
-	}); err != nil {
-		log.Fatalf("Failed to run simulation: %v", err)
+	// Get the raw aggregated metrics from all runs.
+	finalAnalysis := analyzer.Analyze()
+
+	// Write the results to CSV files.
+	resultsWriter := result.NewWriter(cfg.ResultsPath, cfg.System, string(cfg.HardwareType), cfg.Runs, cfg.Voters)
+	if err := resultsWriter.WriteAllResults(finalAnalysis); err != nil {
+		log.Fatalf("Failed to write results: %w", err)
 	}
 
-	log.Info("Total Time: %s, Setup Time: %s, Registration Time: %s, Voting Time: %s, Tally Time: %s",
-		totalTimeRecorder.GetMetric("TotalTime").WallClock.String(),
-		runMetrics["TotalSetup"].WallClocks[0],
-		sumDurations(runMetrics["TotalRegistration"].WallClocks),
-		sumDurations(runMetrics["TotalVoting"].WallClocks),
-		sumDurations(runMetrics["TotalTally"].WallClocks))
-
-	// 4. Write the results to CSV files.
-	resultsWriter := result.NewWriter(cfg.ResultsPath, cfg.System, sim.hw.Name(), cfg.Voters)
-	if err = resultsWriter.WriteAllResults(runMetrics); err != nil {
-		log.Fatalf("Failed to write results: %v", err)
-	}
-
-	fmt.Printf("--- Results ---\n")
-	fmt.Printf("Registration Phase (WallClock): %s\n", sumDurations(runMetrics["TotalRegistration"].WallClocks))
-	fmt.Printf("Tally Phase (WallClock): %s\n", sumDurations(runMetrics["TotalTally"].WallClocks))
-	fmt.Printf("Option A: %d\n", tally.Results[0])
-	fmt.Printf("Option B: %d\n", tally.Results[1])
-	fmt.Printf("Winner: %s\n", tally.Winner)
+	printConsoleSummary(finalAnalysis)
 }
 
-func sumDurations(durations []time.Duration) time.Duration {
-	total := time.Duration(0)
-	for _, duration := range durations {
-		total += duration
+func printConsoleSummary(result metrics.AnalysisResult) {
+	fmt.Println("\n-------------------------------------------------")
+	fmt.Printf("--- Average Phase Times (Per Simulation Run) ---\n")
+	fmt.Println("-------------------------------------------------")
+
+	phases := []string{"Simulation", "Setup", "Registration", "Voting", "Tally"}
+	for a, phase := range phases {
+		if comp, ok := result.Components[phase]; ok {
+			if summary, ok := comp.Summaries["WallClock"]; ok {
+				fmt.Printf("Average %-18s Time: %s\n", phase, summary.WallClock.Mean)
+				if a == 0 {
+					fmt.Println("-------------------------------------------------")
+				}
+			}
+		}
 	}
-	return total
+	fmt.Println("-------------------------------------------------")
 }
 
 // NewSimulation creates and initializes all components required for a simulation.
-func NewSimulation(cfg *config.Config) (*Simulation, error) {
+func NewSimulation(cfg *config.Config, rec *metrics.Recorder) (*Simulation, error) {
 	log.Debug("Initializing crypto parameters, actors and hardware")
 
 	// Initialize Crypto Parameters
 	crypto.InitCryptoParams(cfg.Seed)
 
 	// Initialize Actors
-	sim := &Simulation{config: cfg}
+	sim := &Simulation{config: cfg, metrics: rec}
 	var err error
-	sim.ea, err = actors.NewElectionAuthority(cfg.Talliers)
+	sim.ea, err = actors.NewElectionAuthority(cfg.EAMembers)
 	if err != nil {
 		return nil, err
 	}
@@ -125,153 +139,128 @@ func NewSimulation(cfg *config.Config) (*Simulation, error) {
 }
 
 // Run runs the simulation
-func (s *Simulation) Run() (map[string]*metrics.AggregatedMetrics, *protocol.TallyOutput, error) {
+func (s *Simulation) Run() error {
 	log.Info("Starting simulation with %d voters on '%s' hardware...", s.config.Voters, s.config.HardwareType)
 	var err error
 
+	// Run Context
+	runCtx := context.NewContext(s.config, s.metrics)
+	flow := protocol.NewFlow(s.official, s.kiosk, s.ea, s.printer, s.ledger, s.hw)
+
 	// --- Setup Phase ---
-	setupRecorder := metrics.NewRecorder(s.config.PrintMetrics)
-	setupCtx := context.NewContext(s.config, setupRecorder)
-	if err = setupCtx.Recorder.Record("TotalSetup", func() error {
-		return s.printer.GenerateEnvelopes(setupCtx, s.hw, s.ledger, s.config)
+	if err = s.metrics.Record("Setup", metrics.MLogic, func() error {
+		return s.printer.GenerateEnvelopes(runCtx, s.hw, s.ledger, s.config)
 	}); err != nil {
-		return nil, nil, fmt.Errorf("failed during simulation setup: %w", err)
+		return fmt.Errorf("failed during run setup: %w", err)
 	}
 
-	// --- Per-Voter Simulation ---
-	aggregator := metrics.NewAggregator()
-	var voterMaterials []*io.VotingMaterials
+	log.Info("--- Starting Per-Voter Simulation (Registration and Voting) ---")
+	if err = s.metrics.Record("Registration", metrics.MLogic, func() error {
+		for _, voter := range s.voters {
+			log.Debug("-- Registering voter with Voter ID: %d...", voter.VoterID())
 
-	log.Info("--- Starting Per-Voter Simulation ---")
+			var voterCreds []*io.VotingMaterials
 
-	for i := uint64(0); i < s.config.Voters; i++ {
-		voter := s.voters[i]
-		log.Debug("-- Registering voter with Voter ID: %d...", voter.VoterID())
-		flow := protocol.NewFlow(s.official, s.kiosk, s.ea, s.printer, s.ledger, s.hw)
-
-		// --- Registration ---
-		regRecorder := metrics.NewRecorder(s.config.PrintMetrics)
-		regCtx := context.NewContext(s.config, regRecorder)
-		if err = regCtx.Recorder.Record("TotalRegistration", func() error {
-			// -- Check-In (includes kiosk authorization)
-			log.Debug("Checking In w/ Kiosk Authorization...")
-			checkInBarcode, err := flow.CheckIn(regCtx, voter)
-			if err != nil {
-				return fmt.Errorf("failed to check in: %w", err)
-			}
-
-			// -- Real Credential Creation
-			log.Debug("Creating Real Credential...")
-			realMaterials, err := flow.CreateRealCredential(regCtx, voter, checkInBarcode)
-			if err != nil {
-				return fmt.Errorf("failed to create real credential: %w", err)
-			}
-			log.Trace("Generated real credential material for voter %d: %v", voter.VoterID(), realMaterials)
-			voter.SetRealMaterial(realMaterials)
-
-			// -- Fake/Test Credential Creation
-			log.Debug("Creating %d Fake/Test Credentials...", s.config.FakeCredentialCount)
-			for j := uint64(0); j < s.config.FakeCredentialCount; j++ {
-				testMaterials, err := flow.CreateTestCredential(regCtx, voter)
+			if err = s.metrics.Record("RegisterAVoter", metrics.MLogic, func() error {
+				log.Debug("CheckIn w/ Kiosk Authorization...")
+				err = flow.CheckIn(runCtx, voter)
 				if err != nil {
-					return fmt.Errorf("failed to create test credential #%d: %w", j+1, err)
+					return fmt.Errorf("failed to check in: %w", err)
 				}
-				log.Trace("Generated test credential material for voter %d: %v", voter.VoterID(), testMaterials)
-				voter.AddTestMaterials(testMaterials)
-			}
 
-			// -- Check-Out
-			log.Debug("Checking Out...")
-			// Choose a random material for checkout
-			voterMaterials = append([]*io.VotingMaterials{voter.RealMaterial()}, voter.TestMaterials()...)
-			randomMaterial := voterMaterials[rand.Intn(len(voterMaterials))]
-			if err = flow.CheckOut(regCtx, voter, randomMaterial); err != nil {
-				return fmt.Errorf("failed to check out credential: %w", err)
-			}
-
-			// -- Activation
-			log.Debug("Activating %d Credential(s)...", len(voterMaterials))
-			for _, material := range voterMaterials {
-				log.Trace("Activating credential %v...", material)
-				err = flow.Activate(regCtx, voter, material)
-				if err != nil {
-					return fmt.Errorf("failed to activate credential: %w", err)
+				log.Debug("Creating Real Credential...")
+				if err = s.metrics.Record("CreateARealCredential", metrics.MLogic, func() error {
+					return flow.CreateRealCredential(runCtx, voter)
+				}); err != nil {
+					return fmt.Errorf("failed to create real credential: %w", err)
 				}
-			}
 
-			return nil
-		}); err != nil {
-			return nil, nil, fmt.Errorf("failed during simulation for voter %d: %w", voter.VoterID(), err)
+				log.Debug("Creating %d Fake/Test Credentials...", s.config.FakeCredentialCount)
+				for j := uint64(0); j < s.config.FakeCredentialCount; j++ {
+					if err = s.metrics.Record("CreateAFakeCredential", metrics.MLogic, func() error {
+						return flow.CreateTestCredential(runCtx, voter)
+					}); err != nil {
+						return fmt.Errorf("failed to create test credential #%d: %w", j+1, err)
+					}
+				}
+
+				// Fetch all voter Credentials
+				voterCreds = append([]*io.VotingMaterials{voter.RealMaterial()}, voter.TestMaterials()...)
+
+				// -- Check-Out
+				log.Debug("Checking Out...")
+				if err = s.metrics.Record("CheckoutAVoter", metrics.MLogic, func() error {
+					randomMaterial := voterCreds[rand.Intn(len(voterCreds))] // Choose a random material for checkout
+					return flow.CheckOut(runCtx, voter, randomMaterial)
+				}); err != nil {
+					return fmt.Errorf("failed to check out: %w", err)
+				}
+
+				// -- Activation
+				log.Debug("Activating %d Credential(s)...", len(voterCreds))
+				for _, material := range voterCreds {
+					if err = s.metrics.Record("ActivateACredential", metrics.MLogic, func() error {
+						return flow.Activate(runCtx, voter, material)
+					}); err != nil {
+						return fmt.Errorf("failed to activate credential: %w", err)
+					}
+				}
+
+				// Simulates the posting of the credentials onto the ledger by the election authority.
+				// In a real system, this should be done periodically and randomly (e.g., once a week)
+				// to prevent any kind of side channel timing attacks.
+				log.Debug("Election Authority Posting %d Credential(s) on Ledger...", len(voterCreds))
+				_ = s.metrics.Record("EAPostingCreds", metrics.MLogic, func() error {
+					for _, material := range voterCreds {
+						s.ledger.AppendCredentialRecord(&ledger.CredentialEntry{CredPk: material.Credential.PublicKey()})
+					}
+					return nil
+				})
+
+				return nil
+			}); err != nil {
+				return fmt.Errorf("failed during registration for voter %d: %w", voter.VoterID(), err)
+			}
 		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed during registration phase: %w", err)
+	}
 
-		// Simulates the posting of the credentials onto the ledger by the election authority.
-		// In a real system, this should be done periodically and randomly (e.g., once a week)
-		// to prevent any kind of side channel timing attacks. This is completed on a
-		// schedule so not included in any sub-metric.
-		log.Debug("Election Authority Posting %d Credential(s) on Ledger...", len(voterMaterials))
-		for _, material := range voterMaterials {
-			s.ledger.AppendCredentialRecord(&ledger.CredentialEntry{CredPk: material.Credential.PublicKey()})
-		}
-
-		// --- Voting Phase ---
-		// We now simulate each voter casting a vote using each of their credentials (real and fake).
-		// For simplicity, only 0 or 1 is supported; we encrypt 0 for all real votes and 1 for all
-		// fake votes. Therefore, the result of the tally phase should be equal to 0.
-		log.Debug("Casting a Vote Per Credential (%d credentials)...", len(voterMaterials))
-		// Setup metrics recorder and the context
-		voteRecorder := metrics.NewRecorder(s.config.PrintMetrics)
-		voteCtx := context.NewContext(s.config, voteRecorder)
-		if err = voteCtx.Recorder.Record("TotalVoting", func() error {
-			for a, material := range voterMaterials {
-				var vote *ledger.VotingEntry
-				if a == 0 { // All Real Credentials vote for option A.
-					vote, err = flow.CreateVote(voteCtx, material, 0)
-				} else { // All fake credentials vote for option B.
-					vote, err = flow.CreateVote(voteCtx, material, 1)
+	// --- Voting Phase ---
+	// We now simulate each voter casting a vote using each of their credentials (real and fake).
+	// We have all real credentials to vote for candidate A.
+	if err = s.metrics.Record("Voting", metrics.MLogic, func() error {
+		for _, voter := range s.voters {
+			voterCreds := append([]*io.VotingMaterials{voter.RealMaterial()}, voter.TestMaterials()...)
+			log.Debug("Casting a Vote Per Credential (%d credentials)...", len(voterCreds))
+			for j, material := range voterCreds {
+				if err = s.metrics.Record("CastAVote", metrics.MLogic, func() error {
+					if j == 0 { // All Real Credentials vote for option A.
+						return flow.CastVote(runCtx, material, 0)
+					} else { // All fake credentials vote for option B.
+						return flow.CastVote(runCtx, material, 1)
+					}
+				}); err != nil {
+					return fmt.Errorf("failed during voting phase: %w", err)
 				}
-				// Tallying result should be option A with no votes for option B.
-
-				if err != nil {
-					return err
-				}
-				s.ledger.AppendVoteRecord(vote)
 			}
-			return nil
-		}); err != nil {
-			return nil, nil, fmt.Errorf("failed during voting phase: %w", err)
 		}
-
-		// The registration recorder calculates final derived metrics (e.g., CPU time).
-		regRecorder.Finalize("TotalRegistration", []string{
-			"Official_CheckIn", "Kiosk_Authorization",
-			"Real_Credential_Creation", "Test_Credential_Creation",
-			"CheckOut", "Activation",
-		})
-		//setupRecorder.Finalize("TotalSetup", []string{})
-		//voteRecorder.Finalize("TotalVoting", []string{})
-
-		aggregator.Add(setupRecorder)
-		aggregator.Add(regRecorder)
-		aggregator.Add(voteRecorder)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed during voting phase: %w", err)
 	}
 
 	// --- Tallying Phase ---
 	log.Info("--- Starting Tallying Phase ---")
 	log.Info("Tallying %d votes across %d voters...", len(s.ledger.GetVotingRecords()), len(s.ledger.GetRegistrationRecords()))
-	var tally *protocol.TallyOutput
 
-	tallyRecorder := metrics.NewRecorder(s.config.PrintMetrics)
-	tallyCtx := context.NewContext(s.config, tallyRecorder)
-	if err = tallyCtx.Recorder.Record("TotalTally", func() error {
+	if err = s.metrics.Record("Tally", metrics.MLogic, func() error {
 		tallyInput := protocol.NewTallyInput(s.config, s.ea, s.ledger)
-		if tally, err = protocol.RunTally(tallyCtx, tallyInput); err != nil {
-			return fmt.Errorf("tallying process failed: %w", err)
-		}
-		return err
+		return protocol.RunTally(runCtx, tallyInput)
 	}); err != nil {
-		return nil, nil, fmt.Errorf("failed during tallying phase: %w", err)
+		return fmt.Errorf("failed during tallying phase: %w", err)
 	}
-	aggregator.Add(tallyRecorder)
 
-	return aggregator.GetAggregatedMetrics(), tally, nil
+	return nil
 }
