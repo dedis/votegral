@@ -212,15 +212,15 @@ func calculateStats(durations []time.Duration) StatSummary {
 	}
 	sort.Float64s(floats)
 
-	var min, max time.Duration
+	var mmin, mmax time.Duration
 	if len(durations) > 0 {
-		min, max = durations[0], durations[0]
+		mmin, mmax = durations[0], durations[0]
 		for _, v := range durations {
-			if v < min {
-				min = v
+			if v < mmin {
+				mmin = v
 			}
-			if v > max {
-				max = v
+			if v > mmax {
+				mmax = v
 			}
 		}
 	}
@@ -230,8 +230,8 @@ func calculateStats(durations []time.Duration) StatSummary {
 		Mean:  time.Duration(stat.Mean(floats, nil)) * time.Microsecond,
 		P50:   time.Duration(stat.Quantile(0.5, stat.Empirical, floats, nil)) * time.Microsecond,
 		P95:   time.Duration(stat.Quantile(0.95, stat.Empirical, floats, nil)) * time.Microsecond,
-		Min:   min,
-		Max:   max,
+		Min:   mmin,
+		Max:   mmax,
 	}
 }
 

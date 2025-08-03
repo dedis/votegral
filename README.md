@@ -98,7 +98,7 @@ The simulation's behavior is controlled via command-line flags.
 | --fake-creds    | uint64 | 1                | Number of fake credentials for each voter.                                    |
 | --ea-members    | uint64 | 4                | Number of Election Authority Members.                                         |
 | --system        | string | Mac              | System tag (`Mac`, `Kiosk`, `Pi`, `Xeon`) for logging and system-level logic. |
-| --hw            | string | Core             | [Hardware modes](#hardware-configuration) (`Core`, `Disk`, `Peripherals`)     |
+| --hw            | string | Core             | [Hardware modes](#hardware-modes) (`Core`, `Disk`, `Peripherals`)             |
 | --printer       | string | TM               | Name of the printer in CUPS if Peripheral is enabled.                         |
 | --cups-wait     | int    | 100              | Wait time (ms) for CUPS daemon to start for measurement.                      |
 | --pics          | string | "output/pics"    | Path for storing pictures of physical materials.                              |
