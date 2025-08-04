@@ -19,6 +19,13 @@ set(SOURCE_FILES
     src/shuffler.cc
     src/zkp.cc)
 
+# START: Groth Shuffle Application for Votegral
+set(APP_SOURCE_FILES
+    src/main.cc
+    ${SOURCE_FILES}
+)
+# END: Groth Shuffle Application for Votegral
+
 set(TEST_SOURCE_FILES
     test/test_main.cc
     test/test_curve.cc
@@ -30,6 +37,9 @@ include_directories(src)
 include_directories(thirdparty)
 
 set(TEST_EXEC tests.x)
+# START: Groth Shuffle Application for Votegral
+set(APP_EXEC shuffle_app)
+# END: Groth Shuffle Application for Votegral
 
 set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g" )
 add_compile_definitions( TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/test/data/" )
@@ -43,3 +53,11 @@ target_link_libraries( ${TEST_EXEC}
   gmp
   pthread )
 catch_discover_tests( ${TEST_EXEC} )
+
+# START: Groth Shuffle Application for Votegral
+add_executable( ${APP_EXEC} ${APP_SOURCE_FILES} )
+target_link_libraries( ${APP_EXEC}
+  ${RELIC_LIB}
+  gmp
+  pthread )
+# END: Groth Shuffle Application for Votegral

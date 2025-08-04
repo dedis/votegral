@@ -54,6 +54,16 @@ class Shuffler {
  public:
   Shuffler(const PublicKey& pk, const CommitKey& ck, Prg& prg)
       : m_pk(pk), m_ck(ck), m_prg(prg){};
+  
+  // START: Groth Shuffle Application for Votegral
+  // Custom Prove function: Accepts the statement (Es, pEs) and the witness (p, rho)
+  ShuffleP Prove(
+    const std::vector<Ctxt>& Es,          // Input Ciphertexts
+    const std::vector<Ctxt>& pEs,         // Output (Shuffled) Ciphertexts
+    const Permutation& p,                 // Permutation (Witness)
+    const std::vector<Scalar>& rho,       // Randomness (Witness)
+      Hash& hash);
+  // END: Groth Shuffle Application for Votegral
 
   /**
    * @brief Shuffle a set of ciphertexts and return a proof of correctness.

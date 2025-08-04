@@ -181,3 +181,65 @@ bool shf::Shuffler::VerifyShuffle(const std::vector<shf::Ctxt>& ctxts,
 
   return check0 && check1;
 }
+
+// START: Groth Shuffle Application for Votegral
+shf::ShuffleP shf::Shuffler::Prove(
+    const std::vector<shf::Ctxt>& Es,
+    const std::vector<shf::Ctxt>& pEs,
+    const shf::Permutation& p,
+    const std::vector<shf::Scalar>& rho,
+    shf::Hash& hash) {
+
+    const std::size_t n = Es.size();
+
+    if (pEs.size() != n || p.size() != n || rho.size() != n) {
+        throw std::runtime_error("Input dimensions mismatch in Prove. Es, pEs, p, and rho must have the same size.");
+    }
+
+    // --- Proof Generation Logic ---
+
+    // Ca = commit(ck ; pi(1) ... pi(n) ; r)
+    const std::vector<Scalar> a = PermutationAsScalars(p);
+    // Commit generates internal randomness (Ca.r) for the commitment itself.
+    const CommitmentAndRandomness Ca = Commit(m_ck, a);
+
+    // Calculate Challenge 1 (x)
+    const Scalar x = ShuffleChallenge1(hash, Es, pEs, Ca.C);
+
+    // Cb = commit(ck ; pi(1)*x^i ... pi(n)*x^i ; s);
+    const std::vector<Scalar> xexp = ExpSuccessive(x, n);
+    const std::vector<Scalar> b = Permute(xexp, p);
+    const CommitmentAndRandomness Cb = Commit(m_ck, b);
+
+    // Calculate Challenges 2 and 3 (y, z)
+    const Scalar y = ShuffleChallenge2(hash, x, Cb.C);
+    const Scalar z = ShuffleChallenge3(hash, y);
+
+    // Prepare Product Argument
+    SCALAR_VECTOR(dz, n);
+    dz.emplace_back(y * a[0] + b[0] - z);
+    Scalar prod = dz[0];
+    for (std::size_t i = 1; i < n; ++i) {
+        dz.emplace_back(y * a[i] + b[i] - z);
+        prod *= dz[i];
+    }
+    const Scalar t = y * Ca.r + Cb.r;
+    const Point CdCz = Commit(m_ck, t, dz);
+
+    // Generate Product Proof (proof0)
+    const ProductP proof0 = CreateProof(m_ck, hash, {CdCz, prod}, dz, t);
+
+    // Prepare Multi-Exponentiation Argument
+    // We use the provided randomness 'rho'
+    const Scalar rr = NegateInnerProd(rho, b);
+    // Ex is calculated based on the provided output pEs
+    const Ctxt Ex = Add(Encrypt(m_pk, Point(), rr), Dot(b, pEs));
+
+    // Generate Multi-Exponentiation Proof (proof1)
+    const MultiExpP proof1 =
+        CreateProof(m_ck, m_pk, hash, {pEs, Ex, Cb.C}, b, Cb.r, rr);
+
+    // Return the generated proof components.
+    return {pEs, Ca.C, Cb.C, proof0, proof1};
+}
+// END: Groth Shuffle Application for Votegral
