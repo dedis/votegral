@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go.dedis.ch/kyber/v3"
 	"votegral/pkg/actors"
+	"votegral/pkg/concurrency"
 	"votegral/pkg/config"
 	"votegral/pkg/context"
 	"votegral/pkg/crypto"
@@ -19,15 +20,17 @@ type TallyInput struct {
 	RegRecords []*ledger.RegistrationEntry
 	Votes      []*ledger.VotingEntry
 	Creds      []*ledger.CredentialEntry
+	Shuffler   crypto.Shuffler
 }
 
-func NewTallyInput(config *config.Config, ea *actors.ElectionAuthority, l *ledger.Ledger) *TallyInput {
+func NewTallyInput(config *config.Config, ea *actors.ElectionAuthority, l *ledger.Ledger, shuffler crypto.Shuffler) *TallyInput {
 	tally := &TallyInput{
 		config:     config,
 		EA:         ea,
 		RegRecords: l.GetRegistrationRecords(),
 		Votes:      l.GetVotingRecords(),
 		Creds:      l.GetCredentialRecords(),
+		Shuffler:   shuffler,
 	}
 
 	return tally
@@ -77,7 +80,7 @@ func RunTally(ctx *context.OperationContext, input *TallyInput) error {
 	// Since this is parallelizable, we do this once, assuming that each node does it simultaneously.
 	log.Info("Pre-Tally: Verifying ledger contents...")
 	if err = ctx.Recorder.Record("Tally_0_VerifyLedgerContents", metrics.MLogic, func() error {
-		return verifyLedgerContents(ctx, input)
+		return ledger.VerifyLedgerContents(ctx, input.RegRecords, input.Creds, input.Votes)
 	}); err != nil {
 		return err
 	}
@@ -85,7 +88,7 @@ func RunTally(ctx *context.OperationContext, input *TallyInput) error {
 	log.Info("-- Tally Stage 1: Shuffling %d registration records...", len(input.RegRecords))
 	if err = ctx.Recorder.Record("Tally_1_ShuffleRegistrationRecords", metrics.MLogic, func() error {
 		regCreds := extractRegCredentials(input.RegRecords)
-		tally.RegRecordsShuffled, err = crypto.ShuffleElGamalCiphertexts(ctx, input.EA.PublicKey(), regCreds)
+		tally.RegRecordsShuffled, err = input.Shuffler.Shuffle(ctx, input.EA.PublicKey(), regCreds)
 		return err
 	}); err != nil {
 		return err
@@ -95,8 +98,7 @@ func RunTally(ctx *context.OperationContext, input *TallyInput) error {
 		len(tally.RegRecordsShuffled[lastTallier].ShuffledC1s))
 	if err = ctx.Recorder.Record("Tally_2_DeterministicTagsOnShuffledRegistrationRecords", metrics.MLogic, func() error {
 		if err = ctx.Recorder.Record("GenerateDeterministicTags", metrics.MLogic, func() error {
-			tally.RegCredTags, tally.RegCredTagsProof, err = crypto.GenerateDeterministicTags(
-				crypto.Suite,
+			tally.RegCredTags, tally.RegCredTagsProof, err = crypto.GenerateDeterministicTags(ctx, crypto.Suite,
 				tally.RegRecordsShuffled[lastTallier].ShuffledC1s,
 				tally.RegRecordsShuffled[lastTallier].ShuffledC2s,
 				talliers,
@@ -106,8 +108,7 @@ func RunTally(ctx *context.OperationContext, input *TallyInput) error {
 			return fmt.Errorf("failed to generate deterministic tags: %w", err)
 		}
 		if err = ctx.Recorder.Record("VerifyDeterministicTags", metrics.MLogic, func() error {
-			return crypto.VerifyDeterministicTagProof(
-				crypto.Suite,
+			return crypto.VerifyDeterministicTagProof(ctx, crypto.Suite,
 				tally.RegRecordsShuffled[lastTallier].ShuffledC1s,
 				tally.RegRecordsShuffled[lastTallier].ShuffledC2s,
 				talliers,
@@ -124,7 +125,7 @@ func RunTally(ctx *context.OperationContext, input *TallyInput) error {
 	log.Info("-- Tally Stage 3: Shuffling %d voting records (credential, vote) pairs...", len(input.Votes))
 	if err = ctx.Recorder.Record("Tally_3_ShuffleVotingRecords", metrics.MLogic, func() error {
 		voteCredsX, voteCredsY := extractBallotSequences(input.Votes)
-		tally.VoteRecordsShuffled, err = crypto.ShuffleElGamalSequences(ctx, input.EA.PublicKey(), voteCredsX, voteCredsY)
+		tally.VoteRecordsShuffled, err = input.Shuffler.ShuffleSequences(ctx, input.EA.PublicKey(), voteCredsX, voteCredsY)
 		return err
 	}); err != nil {
 		return err
@@ -134,8 +135,7 @@ func RunTally(ctx *context.OperationContext, input *TallyInput) error {
 		len(tally.VoteRecordsShuffled[lastTallier].ShuffledC1s[0]))
 	if err = ctx.Recorder.Record("Tally_4_DeterministicTagsOnShuffledVotingRecords", metrics.MLogic, func() error {
 		if err = ctx.Recorder.Record("GenerateDeterministicTags", metrics.MLogic, func() error {
-			tally.VoteCredTags, tally.VoteCredTagsProof, err = crypto.GenerateDeterministicTags(
-				crypto.Suite,
+			tally.VoteCredTags, tally.VoteCredTagsProof, err = crypto.GenerateDeterministicTags(ctx, crypto.Suite,
 				tally.VoteRecordsShuffled[lastTallier].ShuffledC1s[0],
 				tally.VoteRecordsShuffled[lastTallier].ShuffledC2s[0],
 				talliers,
@@ -145,8 +145,7 @@ func RunTally(ctx *context.OperationContext, input *TallyInput) error {
 			return fmt.Errorf("failed to generate deterministic tags: %w", err)
 		}
 		if err = ctx.Recorder.Record("VerifyDeterministicTags", metrics.MLogic, func() error {
-			return crypto.VerifyDeterministicTagProof(
-				crypto.Suite,
+			return crypto.VerifyDeterministicTagProof(ctx, crypto.Suite,
 				tally.VoteRecordsShuffled[lastTallier].ShuffledC1s[0],
 				tally.VoteRecordsShuffled[lastTallier].ShuffledC2s[0],
 				talliers,
@@ -195,41 +194,10 @@ func RunTally(ctx *context.OperationContext, input *TallyInput) error {
 		return nil
 	})
 
-	fmt.Printf("Option A: %d\n", tally.Results[0])
-	fmt.Printf("Option B: %d\n", tally.Results[1])
-	fmt.Printf("Winner: %s\n", tally.Winner)
+	// Result
+	fmt.Printf("Option A: %d, B: %d, Winner: %s\n", tally.Results[0], tally.Results[1], tally.Winner)
 
 	return err
-}
-
-// verifyLedgerContents checks the integrity and proofs of all records on the ledger.
-func verifyLedgerContents(ctx *context.OperationContext, input *TallyInput) error {
-	// Verify Registration Records
-	for _, regRecord := range input.RegRecords {
-		if err := regRecord.Verify(); err != nil {
-			return fmt.Errorf("failed to verify registration record %s: %w", regRecord.VoterID, err)
-		}
-	}
-
-	// Compile Credential Authorization List: Real and Fake Credentials issued by the Kiosk
-	authorizedCredList := make(map[string]struct{})
-	for _, v := range input.Creds {
-		authorizedCredList[v.CredPk.String()] = struct{}{}
-	}
-
-	// Verify voting records by comparing them with the credential authorization list.
-	for _, voteRecord := range input.Votes {
-		if err := ctx.Recorder.Record("VerifyAVote", metrics.MLogic, func() error {
-			if err := voteRecord.Verify(authorizedCredList); err != nil {
-				return fmt.Errorf("failed to verify voting record for vote %s: %w", voteRecord, err)
-			}
-			return nil
-		}); err != nil {
-			return err
-		}
-
-	}
-	return nil
 }
 
 // extractRegCredentials extracts the encrypted real credentials from the registration ledger.
@@ -287,47 +255,55 @@ func filterForRealVotes(tally *Tally, lastTallier uint64) ([]*crypto.ElGamalCiph
 	return realEncVotes, nil
 }
 
-// decryptVotes decrypts a list of encrypted votes using threshold decryption and verifies the generated proofs.
+// decryptVotes decrypts a list of encrypted votes using threshold decryption.
 func decryptVotes(ctx *context.OperationContext, input *TallyInput, realEncVotes []*crypto.ElGamalCiphertext) ([]uint, error) {
-	log.Info("Tally Step 6: Decrypting %d real votes...", len(realEncVotes))
-
-	var realVotes []uint
-	for _, cred := range realEncVotes {
+	workerFunc := func(vote *crypto.ElGamalCiphertext) (uint, error) {
 		var M kyber.Point
 		var decProofs []*crypto.ElGamalProof
 		var err error
-		if err = ctx.Recorder.Record("MultiKeyDecryptWithProof", metrics.MLogic, func() error {
-			M, decProofs, err = cred.MultiKeyDecryptWithProof(input.EA.KeyShares())
-			return nil
-		}); err != nil {
-			return nil, err
-		}
 
-		if err != nil {
-			return nil, fmt.Errorf("failed to decrypt vote: %w", err)
-		}
-		if err = ctx.Recorder.Record("VerifyDecryptionProofs", metrics.MLogic, func() error {
+		if ctx.Config.Cores > 1 {
+			// Parallel
+			M, decProofs, err = vote.MultiKeyDecryptWithProof(input.EA.KeyShares())
+			if err != nil {
+				return 0, fmt.Errorf("failed to decrypt vote: %w", err)
+			}
+
 			for _, decProof := range decProofs {
-				err = decProof.Verify()
-				if err != nil {
-					return fmt.Errorf("decryption proof failed: %v", err)
+				if err := decProof.Verify(); err != nil {
+					return 0, fmt.Errorf("decryption proof failed: %w", err)
 				}
 			}
-			return nil
-		}); err != nil {
-			return nil, err
+		} else {
+			// In sequential mode, fine-grained metrics.
+			if err = ctx.Recorder.Record("MultiKeyDecryptWithProof", metrics.MLogic, func() error {
+				M, decProofs, err = vote.MultiKeyDecryptWithProof(input.EA.KeyShares())
+				return err
+			}); err != nil {
+				return 0, err
+			}
+
+			if err = ctx.Recorder.Record("VerifyDecryptionProofs", metrics.MLogic, func() error {
+				for _, decProof := range decProofs {
+					if err := decProof.Verify(); err != nil {
+						return fmt.Errorf("decryption proof failed: %w", err)
+					}
+				}
+				return nil
+			}); err != nil {
+				return 0, err
+			}
 		}
 
+		// Convert the resulting point to a vote.
 		if M.Equal(crypto.Suite.Point().Null()) {
-			log.Debug("Decrypted Vote: %d", 0)
-			realVotes = append(realVotes, 0)
-		} else if M.Equal(crypto.Suite.Point().Base()) {
-			log.Debug("Decrypted Vote: %d", 1)
-			realVotes = append(realVotes, 1)
-		} else {
-			return nil, fmt.Errorf("decryption failed: %s", M)
+			return 0, nil
 		}
+		if M.Equal(crypto.Suite.Point().Base()) {
+			return 1, nil
+		}
+		return 0, fmt.Errorf("decryption failed: invalid point %s", M)
 	}
 
-	return realVotes, nil
+	return concurrency.Map(ctx, realEncVotes, workerFunc)
 }

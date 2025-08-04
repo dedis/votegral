@@ -4,6 +4,9 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"go.dedis.ch/kyber/v3"
+	"votegral/pkg/concurrency"
+	"votegral/pkg/context"
+	"votegral/pkg/log"
 )
 
 // Ledger is a data structure available to all actors, it mimics append-only.
@@ -85,4 +88,41 @@ func (l *Ledger) AppendVoteRecord(entry *VotingEntry) {
 // GetVotingRecords returns all voting entries stored in the `votes` sub-ledger.
 func (l *Ledger) GetVotingRecords() []*VotingEntry {
 	return l.votes
+}
+
+// VerifyLedgerContents checks the integrity and cryptographic proofs of all registration and voting records.
+func VerifyLedgerContents(ctx *context.OperationContext,
+	regRecords []*RegistrationEntry,
+	creds []*CredentialEntry,
+	votes []*VotingEntry) error {
+
+	// --- Step 1: Verify Registration Records ---
+	log.Debug("Verifying %d registration records", len(regRecords))
+	regWorker := func(index int, item *RegistrationEntry) error {
+		return item.Verify()
+	}
+	if err := concurrency.ForEach(ctx, regRecords, regWorker); err != nil {
+		return fmt.Errorf("failed to verify registration record: %w", err)
+	}
+
+	// --- Step 2: Compile Authorization List (always sequential) ---
+	log.Debug("Verifying %d credential records", len(creds))
+	authorizedCredList := make(map[string]struct{})
+	for _, v := range creds {
+		authorizedCredList[v.CredPk.String()] = struct{}{}
+	}
+
+	// --- Step 3: Verify Voting Records ---
+	log.Debug("Verifying %d voting records", len(votes))
+	voteWorker := func(index int, item *VotingEntry) error {
+		if err := item.Verify(authorizedCredList); err != nil {
+			return fmt.Errorf("failed to verify voting record for credential %s: %w", item.CredPk.String(), err)
+		}
+		return nil
+	}
+	if err := concurrency.ForEach(ctx, votes, voteWorker); err != nil {
+		return err
+	}
+
+	return nil
 }

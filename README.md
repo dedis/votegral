@@ -15,7 +15,7 @@ benchmarking, and reproducibility.
 
 ## Table of Contents
 
----<!-- TOC -->
+<!-- TOC -->
 * [Votegral w/ TRIP Registration](#votegral-w-trip-registration)
   * [Table of Contents](#table-of-contents)
   * [Getting Started](#getting-started)
@@ -25,13 +25,9 @@ benchmarking, and reproducibility.
   * [Configuration](#configuration)
     * [Command Line Arguments](#command-line-arguments)
     * [Hardware Modes](#hardware-modes)
+    * [Shuffle Modes](#shuffle-modes)
     * [Simulation Output](#simulation-output)
-      * [Detailed Metrics](#detailed-metrics)
-  * [Reproducibility](#reproducibility)
-    * [Testbed Environment](#testbed-environment)
-    * [Peripheral Requirements](#peripheral-requirements)
-    * [Command-Line Arguments](#command-line-arguments-1)
-    * [Results](#results)
+      * [Metrics](#metrics)
   * [Papers](#papers)
   * [Acknowledgments](#acknowledgments)
 <!-- TOC -->
@@ -47,9 +43,12 @@ Follow these steps to get the simulation running on your local machine.
 
 ### Installation and Basic Run
 
+Setup on Ubuntu 24.04 (as of July 2025)
+
 1.  **Clone the Repository:**
     ```bash
-    git clone https://github.com/your-repo/votegral.git
+    sudo apt-get update && sudo apt-get install git
+    git clone https://github.com/dedis/votegral.git
     cd votegral
     ```
 
@@ -57,13 +56,45 @@ Follow these steps to get the simulation running on your local machine.
     The `go build` command will automatically fetch all required dependencies. The following commands build the executable and run a default simulation with 100 voters in the fast, in-memory `Core` mode.
 
     ```bash
+    # Install Go (only if needed)
+    wget https://go.dev/dl/go1.23.11.linux-amd64.tar.gz
+    sudo tar -C /usr/local -xzf go1.23.11.linux-amd64.tar.gz
+    export PATH=$PATH:/usr/local/go/bin
+    
+    # Build Votegral
     cd cmd/simulation
     go build .
     ./simulation --voters=100 --hw=Core
     ```
     To see all available options, run `./simulation --help`.
 
+3.  **Enable BayerGroth Shuffle**
+    BayerGroth shuffle implementation is available in C++ thanks to [Anders Dalskov's repo](https://github.com/anderspkd/groth-shuffle).
+    - Only available on x86 and x64 architectures.
+    
+    ```bash
+    sudo apt-get update && sudo apt-get install build-essential cmake catch2
+    cd prerequisites/anderspkd_groth-shuffle
+    
+    # Install Catch2 v2
+    git clone https://github.com/catchorg/Catch2.git
+    cd Catch2 && git checkout v2.x && cmake -B build -S .
+    sudo cmake --build build --target install
+    
+    # Build BayerGroth Shuffle
+    cd ../
+    cmake . -B build && cd build && make && make tests
+    ./tests.x # All Tests should pass
+    
+    # Copy custom BayerGroth Shuffle App
+    cp ./shuffle_app ../../../cmd/simulation/
+    
+    # Run Votegral w/ BayerGroth Shuffle
+    ./simulation --voters 100 --runs 1 --shuffle bayergroth 
+    ```
+
 ---
+
 
 ## Project Structure
 
@@ -72,6 +103,7 @@ The core logic is in the `pkg` directory, while the executable application is in
 -   **`cmd/simulation/`**: The main application entry point. It handles configuration parsing, sets up the simulation environment, executes the run, and writes the results.
 -   **`pkg/`**: The core package that defines the Votegral system.
     -   **`actors/`**: Introduces participants, such as the `ElectionAuthority`, `Voter`, and `Kiosk`.
+    -   **`concurrency/`**: Provides methods for parallelizable tasks.
     -   **`config/`**: Parses configuration from command-line flags.
     -   **`context/`**: Provides a shared context for operations.
     -   **`crypto/`**: Provides the necessary cryptographic primitives.
@@ -94,15 +126,18 @@ The simulation's behavior is controlled via command-line flags.
 | Flag            | Type   | Default          | Description                                                                   |
 |-----------------|--------|------------------|-------------------------------------------------------------------------------|
 | --runs          | uint64 | 2                | Number of times to run the simulation.                                        |
+| --cores         | uint64 | 1                | Number of CPU cores (0 for All) - `1` for sequential run (w/ add. metrics)    |
 | --voters        | uint64 | 100              | Number of voters to simulate (registration + voting).                         |
 | --fake-creds    | uint64 | 1                | Number of fake credentials for each voter.                                    |
 | --ea-members    | uint64 | 4                | Number of Election Authority Members.                                         |
 | --system        | string | Mac              | System tag (`Mac`, `Kiosk`, `Pi`, `Xeon`) for logging and system-level logic. |
-| --hw            | string | Core             | [Hardware modes](#hardware-modes) (`Core`, `Disk`, `Peripherals`)             |
+| --hw            | string | Core             | [Hardware modes](#hardware-modes) (`Core`, `Disk`, `Peripherals`).            |
+| --shuffle       | string | Neff             | Type of Verifiable Shuffle (`Neff`, `BayerGroth`).                                 |
 | --printer       | string | TM               | Name of the printer in CUPS if Peripheral is enabled.                         |
 | --cups-wait     | int    | 100              | Wait time (ms) for CUPS daemon to start for measurement.                      |
 | --pics          | string | "output/pics"    | Path for storing pictures of physical materials.                              |
 | --results       | string | "output/results" | Path for storing simulation results.                                          |
+| --temp          | string | "output/tmp/"    | Path for storing temporary files.                                             |
 | --print-metrics | string | false            | Whether to print detailed metrics tree at the end.                            |
 | --max-depth     | int    | 2                | Maximum depth of the metrics tree to print                                    |
 | --max-children  | int    | 10               | Maximum number of children to print for each node.                            |
@@ -118,167 +153,141 @@ The simulation can run in different hardware modes, configured via the `-hw` fla
 -   **`Disk`**: Simulates I/O by writing and reading QR code files to and from the disk. This measures the overhead of file system operations.
 -   **`Peripheral`**: Enables interaction with physical hardware like printers and cameras, providing the most realistic performance data.
 
+### Shuffle Modes
+
+The simulation supports two verifiable shuffle implementations, configured via the `--shuffle` flag:
+
+- **Neff**: Andrew Neff's verifiable shuffle scheme thanks to `dedis/kyber`
+- **Bayer and Groth**: Bayer and Groth's verifiable shuffle scheme thanks to `anderspkd/groth-shuffle`
+
 ### Simulation Output
 
 -   **Performance Data**: The simulation generates detailed performance and resource usage data in CSV format, saved to the directory specified by the `-results` flag (default: `output/results/`). Both raw, per-operation data and aggregated statistical results are provided.
 -   **Physical Artifacts**: If using `Disk` or `Peripheral` modes, generated QR codes are saved as PDF/image files in the `-pics` directory (default: `output/pics/`).
 
-#### Detailed Metrics
+#### Metrics
 
 ```bash
-go run ./cmd/simulation/ --hw Disk --voters 2 --fake-creds 1 --runs 1  --print-metrics --max-depth -1 --max-children -1
+./simulation/ --hw Disk --voters 2 --fake-creds 1 --runs 1  --print-metrics --max-depth -1 --max-children -1
 ```
 ```
 --- Measurement Tree (Depth <= -1) ---
-└── Simulation (Logic) - 349.791ms
-    ├── Setup (Logic) - 22.917ms
-    │   ├── CreateAnEnvelope (Logic) - 6.751ms
-    │   │   └── SaveFile_Envelope (DiskWrite) - 6.579ms
-    │   ├── CreateAnEnvelope_1 (Logic) - 5.692ms
-    │   │   └── SaveFile_Envelope (DiskWrite) - 5.574ms
-    │   ├── CreateAnEnvelope_2 (Logic) - 5.326ms
-    │   │   └── SaveFile_Envelope (DiskWrite) - 5.21ms
-    │   └── CreateAnEnvelope_3 (Logic) - 5.133ms
-    │       └── SaveFile_Envelope (DiskWrite) - 5.022ms
-    ├── Registration (Logic) - 222.034ms
-    │   ├── RegisterAVoter (Logic) - 113.941ms
-    │   │   ├── CheckInAVoter_Official (Logic) - 1.589ms
-    │   │   │   └── SaveFile_CheckInBarcode (DiskWrite) - 1.585ms
-    │   │   ├── CheckInAVoter_Kiosk (Logic) - 3.747ms
-    │   │   │   └── ReadFile_CheckInBarcode (DiskRead) - 3.74ms
-    │   │   ├── CreateARealCredential (Logic) - 27.067ms
-    │   │   │   ├── SaveFile_Commit (DiskWrite) - 7.106ms
-    │   │   │   ├── ReadFile_Envelope (DiskRead) - 7.448ms
-    │   │   │   ├── SaveFile_Checkout (DiskWrite) - 5.791ms
-    │   │   │   └── SaveFile_Response (DiskWrite) - 5.944ms
-    │   │   ├── CreateAFakeCredential (Logic) - 25.331ms
-    │   │   │   ├── ReadFile_Envelope (DiskRead) - 6.782ms
-    │   │   │   ├── SaveFile_Commit (DiskWrite) - 6.229ms
-    │   │   │   ├── SaveFile_Checkout (DiskWrite) - 5.574ms
-    │   │   │   └── SaveFile_Response (DiskWrite) - 5.625ms
-    │   │   ├── CheckoutAVoter (Logic) - 8.21ms
-    │   │   │   └── ReadFile_Checkout (DiskRead) - 7.907ms
-    │   │   ├── ActivateACredential (Logic) - 24.144ms
-    │   │   │   ├── ReadFile_Commit (DiskRead) - 8.125ms
-    │   │   │   ├── ReadFile_Envelope (DiskRead) - 6.953ms
-    │   │   │   └── ReadFile_Response (DiskRead) - 8.089ms
-    │   │   ├── ActivateACredential_1 (Logic) - 23.715ms
-    │   │   │   ├── ReadFile_Commit (DiskRead) - 8.296ms
-    │   │   │   ├── ReadFile_Envelope (DiskRead) - 6.658ms
-    │   │   │   └── ReadFile_Response (DiskRead) - 7.824ms
+└── Simulation (Logic) - 330.012ms
+    ├── Setup (Logic) - 32.408ms
+    │   ├── CreateAnEnvelope (Logic) - 8.394ms
+    │   │   └── SaveFile_Envelope (DiskWrite) - 8.345ms
+    │   ├── CreateAnEnvelope_1 (Logic) - 7.532ms
+    │   │   └── SaveFile_Envelope (DiskWrite) - 7.491ms
+    │   ├── CreateAnEnvelope_2 (Logic) - 8.974ms
+    │   │   └── SaveFile_Envelope (DiskWrite) - 8.928ms
+    │   └── CreateAnEnvelope_3 (Logic) - 7.477ms
+    │       └── SaveFile_Envelope (DiskWrite) - 7.414ms
+    ├── Registration (Logic) - 245.728ms
+    │   ├── RegisterAVoter (Logic) - 126.346ms
+    │   │   ├── CheckInAVoter_Official (Logic) - 1.425ms
+    │   │   │   └── SaveFile_CheckInBarcode (DiskWrite) - 1.415ms
+    │   │   ├── CheckInAVoter_Kiosk (Logic) - 3.442ms
+    │   │   │   └── ReadFile_CheckInBarcode (DiskRead) - 3.437ms
+    │   │   ├── CreateARealCredential (Logic) - 30.293ms
+    │   │   │   ├── SaveFile_Commit (DiskWrite) - 7.893ms
+    │   │   │   ├── ReadFile_Envelope (DiskRead) - 8.353ms
+    │   │   │   ├── SaveFile_Checkout (DiskWrite) - 7.473ms
+    │   │   │   └── SaveFile_Response (DiskWrite) - 6.283ms
+    │   │   ├── CreateAFakeCredential (Logic) - 29.854ms
+    │   │   │   ├── ReadFile_Envelope (DiskRead) - 8.386ms
+    │   │   │   ├── SaveFile_Commit (DiskWrite) - 7.469ms
+    │   │   │   ├── SaveFile_Checkout (DiskWrite) - 7.485ms
+    │   │   │   └── SaveFile_Response (DiskWrite) - 6.175ms
+    │   │   ├── CheckoutAVoter (Logic) - 8.899ms
+    │   │   │   └── ReadFile_Checkout (DiskRead) - 8.802ms
+    │   │   ├── ActivateACredential (Logic) - 26.549ms
+    │   │   │   ├── ReadFile_Commit (DiskRead) - 9.202ms
+    │   │   │   ├── ReadFile_Envelope (DiskRead) - 8.683ms
+    │   │   │   └── ReadFile_Response (DiskRead) - 8.289ms
+    │   │   ├── ActivateACredential_1 (Logic) - 25.852ms
+    │   │   │   ├── ReadFile_Commit (DiskRead) - 9.005ms
+    │   │   │   ├── ReadFile_Envelope (DiskRead) - 8.286ms
+    │   │   │   └── ReadFile_Response (DiskRead) - 8.218ms
     │   │   └── EAPostingCreds (Logic) - 1µs
-    │   └── RegisterAVoter_1 (Logic) - 108.075ms
-    │       ├── CheckInAVoter_Official (Logic) - 1.427ms
-    │       │   └── SaveFile_CheckInBarcode (DiskWrite) - 1.419ms
-    │       ├── CheckInAVoter_Kiosk (Logic) - 1.932ms
-    │       │   └── ReadFile_CheckInBarcode (DiskRead) - 1.929ms
-    │       ├── CreateARealCredential (Logic) - 24.379ms
-    │       │   ├── SaveFile_Commit (DiskWrite) - 6.062ms
-    │       │   ├── ReadFile_Envelope (DiskRead) - 6.487ms
-    │       │   ├── SaveFile_Checkout (DiskWrite) - 5.547ms
-    │       │   └── SaveFile_Response (DiskWrite) - 5.426ms
-    │       ├── CreateAFakeCredential (Logic) - 24.862ms
-    │       │   ├── ReadFile_Envelope (DiskRead) - 6.649ms
-    │       │   ├── SaveFile_Commit (DiskWrite) - 6.175ms
-    │       │   ├── SaveFile_Checkout (DiskWrite) - 5.66ms
-    │       │   └── SaveFile_Response (DiskWrite) - 5.481ms
-    │       ├── CheckoutAVoter (Logic) - 8.19ms
-    │       │   └── ReadFile_Checkout (DiskRead) - 7.893ms
-    │       ├── ActivateACredential (Logic) - 23.567ms
-    │       │   ├── ReadFile_Commit (DiskRead) - 8.137ms
-    │       │   ├── ReadFile_Envelope (DiskRead) - 6.712ms
-    │       │   └── ReadFile_Response (DiskRead) - 7.779ms
-    │       ├── ActivateACredential_1 (Logic) - 23.626ms
-    │       │   ├── ReadFile_Commit (DiskRead) - 8.155ms
-    │       │   ├── ReadFile_Envelope (DiskRead) - 6.781ms
-    │       │   └── ReadFile_Response (DiskRead) - 7.754ms
+    │   └── RegisterAVoter_1 (Logic) - 119.378ms
+    │       ├── CheckInAVoter_Official (Logic) - 1.493ms
+    │       │   └── SaveFile_CheckInBarcode (DiskWrite) - 1.488ms
+    │       ├── CheckInAVoter_Kiosk (Logic) - 1.982ms
+    │       │   └── ReadFile_CheckInBarcode (DiskRead) - 1.972ms
+    │       ├── CreateARealCredential (Logic) - 29.373ms
+    │       │   ├── SaveFile_Commit (DiskWrite) - 7.523ms
+    │       │   ├── ReadFile_Envelope (DiskRead) - 8.192ms
+    │       │   ├── SaveFile_Checkout (DiskWrite) - 7.076ms
+    │       │   └── SaveFile_Response (DiskWrite) - 6.133ms
+    │       ├── CreateAFakeCredential (Logic) - 28.755ms
+    │       │   ├── ReadFile_Envelope (DiskRead) - 8.074ms
+    │       │   ├── SaveFile_Commit (DiskWrite) - 7.436ms
+    │       │   ├── SaveFile_Checkout (DiskWrite) - 7.082ms
+    │       │   └── SaveFile_Response (DiskWrite) - 5.875ms
+    │       ├── CheckoutAVoter (Logic) - 8.665ms
+    │       │   └── ReadFile_Checkout (DiskRead) - 8.586ms
+    │       ├── ActivateACredential (Logic) - 24.691ms
+    │       │   ├── ReadFile_Commit (DiskRead) - 8.427ms
+    │       │   ├── ReadFile_Envelope (DiskRead) - 8.166ms
+    │       │   └── ReadFile_Response (DiskRead) - 7.775ms
+    │       ├── ActivateACredential_1 (Logic) - 24.396ms
+    │       │   ├── ReadFile_Commit (DiskRead) - 8.284ms
+    │       │   ├── ReadFile_Envelope (DiskRead) - 7.933ms
+    │       │   └── ReadFile_Response (DiskRead) - 7.845ms
     │       └── EAPostingCreds (Logic) - 0s
-    ├── Voting (Logic) - 4.669ms
-    │   ├── CastAVote (Logic) - 1.195ms
-    │   ├── CastAVote_1 (Logic) - 1.174ms
-    │   ├── CastAVote_2 (Logic) - 1.208ms
-    │   └── CastAVote_3 (Logic) - 1.072ms
-    └── Tally (Logic) - 100.105ms
-        ├── Tally_0_VerifyLedgerContents (Logic) - 5.396ms
-        │   ├── VerifyAVote (Logic) - 1.188ms
-        │   ├── VerifyAVote_1 (Logic) - 1.181ms
-        │   ├── VerifyAVote_2 (Logic) - 1.18ms
-        │   └── VerifyAVote_3 (Logic) - 1.18ms
-        ├── Tally_1_ShuffleRegistrationRecords (Logic) - 13.844ms
-        │   ├── Shuffle (Logic) - 1.482ms
-        │   ├── ShuffleVerify (Logic) - 1.884ms
-        │   ├── Shuffle_1 (Logic) - 1.528ms
-        │   ├── ShuffleVerify_1 (Logic) - 1.804ms
-        │   ├── Shuffle_2 (Logic) - 1.752ms
-        │   ├── ShuffleVerify_2 (Logic) - 1.821ms
-        │   ├── Shuffle_3 (Logic) - 1.533ms
-        │   └── ShuffleVerify_3 (Logic) - 1.933ms
-        ├── Tally_2_DeterministicTagsOnShuffledRegistrationRecords (Logic) - 9.601ms
-        │   ├── AdditiveBlinding (Logic) - 1.556ms
-        │   └── Re-masking&PartialDecryption (Logic) - 8.033ms
-        ├── Tally_3_ShuffleVotingRecords (Logic) - 49.126ms
-        │   ├── Shuffle (Logic) - 6.223ms
-        │   ├── ShuffleVerify (Logic) - 6.15ms
-        │   ├── Shuffle_1 (Logic) - 6.251ms
-        │   ├── ShuffleVerify_1 (Logic) - 6.265ms
-        │   ├── Shuffle_2 (Logic) - 6.143ms
-        │   ├── ShuffleVerify_2 (Logic) - 6.21ms
-        │   ├── Shuffle_3 (Logic) - 5.888ms
-        │   └── ShuffleVerify_3 (Logic) - 5.919ms
-        ├── Tally_4_DeterministicTagsOnShuffledVotingRecords (Logic) - 17.119ms
-        │   ├── AdditiveBlinding (Logic) - 1.533ms
-        │   └── Re-masking&PartialDecryption (Logic) - 15.569ms
-        ├── Tally_5_FilterRealVotes (Logic) - 44µs
-        ├── Tally_6_DecryptVotes (Logic) - 4.878ms
-        │   ├── MultiKeyDecryptWithProof (Logic) - 1.07ms
-        │   ├── VerifyDecryptionProofs (Logic) - 1.369ms
-        │   ├── MultiKeyDecryptWithProof_1 (Logic) - 988µs
-        │   └── VerifyDecryptionProofs_1 (Logic) - 1.409ms
+    ├── Voting (Logic) - 1.974ms
+    │   ├── CastAVote (Logic) - 497µs
+    │   ├── CastAVote_1 (Logic) - 508µs
+    │   ├── CastAVote_2 (Logic) - 479µs
+    │   └── CastAVote_3 (Logic) - 484µs
+    └── Tally (Logic) - 49.841ms
+        ├── Tally_0_VerifyLedgerContents (Logic) - 2.081ms
+        ├── Tally_1_ShuffleRegistrationRecords (Logic) - 6.225ms
+        │   ├── Shuffle (Logic) - 621µs
+        │   ├── ShuffleVerify (Logic) - 1.162ms
+        │   ├── Shuffle_1 (Logic) - 582µs
+        │   ├── ShuffleVerify_1 (Logic) - 905µs
+        │   ├── Shuffle_2 (Logic) - 567µs
+        │   ├── ShuffleVerify_2 (Logic) - 901µs
+        │   ├── Shuffle_3 (Logic) - 572µs
+        │   └── ShuffleVerify_3 (Logic) - 901µs
+        ├── Tally_2_DeterministicTagsOnShuffledRegistrationRecords (Logic) - 6.033ms
+        │   ├── GenerateDeterministicTags (Logic) - 3.038ms
+        │   └── VerifyDeterministicTags (Logic) - 2.992ms
+        ├── Tally_3_ShuffleVotingRecords (Logic) - 20.778ms
+        │   ├── Shuffle (Logic) - 2.355ms
+        │   ├── ShuffleVerify (Logic) - 2.745ms
+        │   ├── Shuffle_1 (Logic) - 2.329ms
+        │   ├── ShuffleVerify_1 (Logic) - 2.927ms
+        │   ├── Shuffle_2 (Logic) - 2.396ms
+        │   ├── ShuffleVerify_2 (Logic) - 2.803ms
+        │   ├── Shuffle_3 (Logic) - 2.444ms
+        │   └── ShuffleVerify_3 (Logic) - 2.763ms
+        ├── Tally_4_DeterministicTagsOnShuffledVotingRecords (Logic) - 12.147ms
+        │   ├── GenerateDeterministicTags (Logic) - 5.974ms
+        │   └── VerifyDeterministicTags (Logic) - 6.166ms
+        ├── Tally_5_FilterRealVotes (Logic) - 6µs
+        ├── Tally_6_DecryptVotes (Logic) - 2.439ms
+        │   ├── MultiKeyDecryptWithProof (Logic) - 637µs
+        │   ├── VerifyDecryptionProofs (Logic) - 575µs
+        │   ├── MultiKeyDecryptWithProof_1 (Logic) - 648µs
+        │   └── VerifyDecryptionProofs_1 (Logic) - 570µs
         └── Tally_7_TallyResults (Logic) - 1µs
+======================================================
+       Median Phase Times (Per Simulation Run)        
+------------------------------------------------------
+ Config: 1 runs, 2 voters, 1 fakes
+         Disk hw, Neff shuffle
+======================================================
+ Simulation (Total)...................... 330.011ms
+   ├─ Setup............................... 32.407ms
+   ├─ Registration....................... 245.727ms
+   ├─ Voting............................... 1.974ms
+   └─ Tally................................ 49.84ms
+======================================================
 ```
 
 ---
-
-## Reproducibility
-
-### Testbed Environment
-
-The primary experiments for our SOSP paper were conducted on the **SPHERE** testbed.
-
-> **SPHERE (Security and Privacy Heterogeneous Environment for Reproducible Experimentation)** is a project funded by the National Science Foundation.
-> -   **Hardware**: AMD EPYC 7702
-> -   **Assigned Resources**: 4 cores, 36GB RAM
-
-### Peripheral Requirements
-
-Running the simulation in the full **`Peripheral`** hardware mode has critical dependencies:
-
--   **Printing**: A **modified version of CUPS** is required for precise performance measurements of the print-to-cut lifecycle.
--   **Camera/Scanner**:
-    -   **macOS**: `imagesnap` (`brew install imagesnap`).
-    -   **Raspberry Pi**: `libcamera-still`.
-    -   Other platforms can be supported by editing the `GetImageCommand` function in `pkg/config/config.go`.
-
-### Command-Line Arguments
-
-```bash
-./simulation --voters 10 --fake-creds 0 --runs 5
-```
-
-- On each run, increase voters by a factor of 10
-
-### Results
-
-
-| Voters      | Setup   | Registration   | Voting   | Tally   |
-|-------------|---------|----------------|----------|---------|
-| 10          |         |                |          |         |
-| 100         |         |                |          |         |
-| 1,000       |         |                |          |         |
-| 10,000      |         |                |          |         |
-| 100,000     |         |                |          |         |
-| 1,000,000   |         |                |          |         |
-
 
 ## Papers
 

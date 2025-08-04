@@ -8,7 +8,7 @@ import (
 )
 
 // Suite is the elliptic curve suite used for the entire simulation
-var Suite = suites.MustFind("Ed25519")
+var Suite = suites.MustFind("p256")
 
 var RandomStream cipher.Stream
 

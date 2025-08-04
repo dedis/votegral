@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"strings"
 	"votegral/pkg/actors"
 	"votegral/pkg/config"
 	"votegral/pkg/context"
@@ -18,22 +19,23 @@ import (
 )
 
 // Simulation orchestrates the entire election simulation process.
-// It holds the configuration, hardware connections, actors,
-// and shared state like the ledger.
 type Simulation struct {
-	config   *config.Config
-	metrics  *metrics.Recorder
+	config  *config.Config
+	metrics *metrics.Recorder
+
+	// Participants
 	ea       *actors.ElectionAuthority
 	official *actors.ElectionOfficial
 	printer  *actors.EnvelopePrinter
 	kiosk    *actors.Kiosk
 	voters   []*actors.Voter
 	ledger   *ledger.Ledger
+
+	shuffler crypto.Shuffler
 	hw       hardware.Hardware
 }
 
 func main() {
-	// 1. Load configuration from flags.
 	cfg := config.NewConfig()
 
 	analyzer := metrics.NewAnalyzer()
@@ -41,58 +43,77 @@ func main() {
 	for run := uint64(0); run < cfg.Runs; run++ {
 		log.Info("----- Starting run %d of %d -----", run+1, cfg.Runs)
 
-		rec := metrics.NewRecorder()
-
-		// Initialize the simulation environment.
-		sim, err := NewSimulation(cfg, rec)
+		sim, err := NewSimulation(cfg, metrics.NewRecorder())
 		if err != nil {
 			log.Fatalf("Failed to initialize simulation: %v", err)
 		}
 
-		// Run the simulation
 		if err = sim.metrics.Record("Simulation", metrics.MLogic, func() error {
+			// Run the simulation
 			return sim.Run()
 		}); err != nil {
 			log.Fatalf("Failed to run simulation: %v", err)
 		}
 
 		if cfg.PrintMetrics {
-			rec.PrintTree(os.Stdout, cfg.MaxDepth, cfg.MaxChildren)
+			sim.metrics.PrintTree(os.Stdout, cfg.MaxDepth, cfg.MaxChildren)
 		}
 
-		// Add measurements to the analyzer
-		analyzer.Add(rec)
+		analyzer.Add(sim.metrics)
 	}
 
 	// Get the raw aggregated metrics from all runs.
 	finalAnalysis := analyzer.Analyze()
 
-	// Write the results to CSV files.
 	resultsWriter := result.NewWriter(cfg.ResultsPath, cfg.System, string(cfg.HardwareType), cfg.Runs, cfg.Voters)
 	if err := resultsWriter.WriteAllResults(finalAnalysis); err != nil {
 		log.Fatalf("Failed to write results: %w", err)
 	}
 
-	printConsoleSummary(finalAnalysis)
+	printSummary(cfg, finalAnalysis)
 }
 
-func printConsoleSummary(result metrics.AnalysisResult) {
-	fmt.Println("\n-------------------------------------------------")
-	fmt.Printf("--- Median Phase Times (Per Simulation Run) ---\n")
-	fmt.Println("-------------------------------------------------")
+func printSummary(cfg *config.Config, result metrics.AnalysisResult) {
+	const totalWidth = 54
+	const leader = '.'
 
-	phases := []string{"Simulation", "Setup", "Registration", "Voting", "Tally"}
-	for a, phase := range phases {
+	// Header
+	border := strings.Repeat("=", totalWidth)
+	title := "Median Phase Times (Per Simulation Run)"
+	fmt.Println(border)
+	fmt.Printf("%*s\n", -totalWidth, fmt.Sprintf("%*s", (totalWidth+len(title))/2, title))
+	fmt.Println(strings.Repeat("-", totalWidth))
+	fmt.Printf(" Config: %d runs, %d voters, %d fakes\n", cfg.Runs, cfg.Voters, cfg.FakeCredentialCount)
+	fmt.Printf("         %s hw, %s shuffle\n", cfg.HardwareType, cfg.ShuffleType)
+	fmt.Println(border)
+
+	// Total time
+	if comp, ok := result.Components["Simulation"]; ok {
+		if summary, ok := comp.Summaries["WallClock"]; ok {
+			label := " Simulation (Total)"
+			padding := totalWidth - len(label) - len(summary.WallClock.P50.String()) - 4
+			fmt.Printf("%s%s %s\n", label, strings.Repeat(string(leader), padding), summary.WallClock.P50)
+		}
+	}
+
+	// Component phases
+	phases := []string{"Setup", "Registration", "Voting", "Tally"}
+	for i, phase := range phases {
+		prefix := "   ├─ "
+		if i == len(phases)-1 {
+			prefix = "   └─ "
+		}
+
 		if comp, ok := result.Components[phase]; ok {
 			if summary, ok := comp.Summaries["WallClock"]; ok {
-				fmt.Printf("Median %-18s Time: %s\n", phase, summary.WallClock.P50)
-				if a == 0 {
-					fmt.Println("-------------------------------------------------")
-				}
+				label := fmt.Sprintf("%s%s", prefix, phase)
+				// Right-align the time value by calculating the dot padding
+				padding := totalWidth - len(label) - len(summary.WallClock.P50.String())
+				fmt.Printf("%s%s %s\n", label, strings.Repeat(string(leader), padding), summary.WallClock.P50)
 			}
 		}
 	}
-	fmt.Println("-------------------------------------------------")
+	fmt.Println(border)
 }
 
 // NewSimulation creates and initializes all components required for a simulation.
@@ -129,32 +150,32 @@ func NewSimulation(cfg *config.Config, rec *metrics.Recorder) (*Simulation, erro
 		sim.voters[i] = actors.NewVoter(i)
 	}
 
-	// Initialize hardware based on configuration
-	sim.hw, err = hardware.New(cfg)
-	if err != nil {
-		return nil, err
-	}
+	// Initialize Shuffler
+	sim.shuffler = crypto.NewShuffler(cfg.ShuffleType)
+
+	// Initialize hardware
+	sim.hw = hardware.New(cfg)
 
 	return sim, nil
 }
 
 // Run runs the simulation
 func (s *Simulation) Run() error {
-	log.Info("Starting simulation with %d voters on '%s' hardware...", s.config.Voters, s.config.HardwareType)
+	log.Info("Starting simulation with %d voters on '%s' hardware and '%s' shuffle...", s.config.Voters, s.config.HardwareType, s.config.ShuffleType)
 	var err error
 
-	// Run Context
+	// Context
 	runCtx := context.NewContext(s.config, s.metrics)
 	flow := protocol.NewFlow(s.official, s.kiosk, s.ea, s.printer, s.ledger, s.hw)
 
-	// --- Setup Phase ---
+	log.Info("--- Setup ---")
 	if err = s.metrics.Record("Setup", metrics.MLogic, func() error {
 		return s.printer.GenerateEnvelopes(runCtx, s.hw, s.ledger, s.config)
 	}); err != nil {
 		return fmt.Errorf("failed during run setup: %w", err)
 	}
 
-	log.Info("--- Starting Per-Voter Simulation (Registration and Voting) ---")
+	log.Info("--- Per-Voter Simulation (Registration and Voting) ---")
 	if err = s.metrics.Record("Registration", metrics.MLogic, func() error {
 		for _, voter := range s.voters {
 			log.Debug("-- Registering voter with Voter ID: %d...", voter.VoterID())
@@ -187,7 +208,6 @@ func (s *Simulation) Run() error {
 				// Fetch all voter Credentials
 				voterCreds = append([]*io.VotingMaterials{voter.RealMaterial()}, voter.TestMaterials()...)
 
-				// -- Check-Out
 				log.Debug("Checking Out...")
 				if err = s.metrics.Record("CheckoutAVoter", metrics.MLogic, func() error {
 					randomMaterial := voterCreds[rand.Intn(len(voterCreds))] // Choose a random material for checkout
@@ -196,7 +216,6 @@ func (s *Simulation) Run() error {
 					return fmt.Errorf("failed to check out: %w", err)
 				}
 
-				// -- Activation
 				log.Debug("Activating %d Credential(s)...", len(voterCreds))
 				for _, material := range voterCreds {
 					if err = s.metrics.Record("ActivateACredential", metrics.MLogic, func() error {
@@ -216,7 +235,6 @@ func (s *Simulation) Run() error {
 					}
 					return nil
 				})
-
 				return nil
 			}); err != nil {
 				return fmt.Errorf("failed during registration for voter %d: %w", voter.VoterID(), err)
@@ -251,12 +269,10 @@ func (s *Simulation) Run() error {
 		return fmt.Errorf("failed during voting phase: %w", err)
 	}
 
-	// --- Tallying Phase ---
 	log.Info("--- Starting Tallying Phase ---")
 	log.Info("Tallying %d votes across %d voters...", len(s.ledger.GetVotingRecords()), len(s.ledger.GetRegistrationRecords()))
-
 	if err = s.metrics.Record("Tally", metrics.MLogic, func() error {
-		tallyInput := protocol.NewTallyInput(s.config, s.ea, s.ledger)
+		tallyInput := protocol.NewTallyInput(s.config, s.ea, s.ledger, s.shuffler)
 		return protocol.RunTally(runCtx, tallyInput)
 	}); err != nil {
 		return fmt.Errorf("failed during tallying phase: %w", err)

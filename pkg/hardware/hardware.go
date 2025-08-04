@@ -69,15 +69,15 @@ func newPeripheral(cfg *config.Config) *Peripheral {
 func (p *Peripheral) Name() string { return "Peripheral" }
 
 // New selects and creates the appropriate hardware implementation based on config.
-func New(cfg *config.Config) (Hardware, error) {
+func New(cfg *config.Config) Hardware {
 	switch cfg.HardwareType {
 	case config.HWCore:
-		return newCore(), nil
+		return newCore()
 	case config.HWDisk:
-		return newDisk(cfg), nil
+		return newDisk(cfg)
 	case config.HWPeripheral:
-		return newPeripheral(cfg), nil
+		return newPeripheral(cfg)
 	default:
-		return nil, fmt.Errorf("unknown hardware type specified: %s", cfg.HardwareType)
+		panic(fmt.Sprintf("unknown hardware type specified: %s", cfg.HardwareType))
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"go.dedis.ch/kyber/v3"
 	"go.dedis.ch/kyber/v3/proof"
+	"votegral/pkg/concurrency"
+	"votegral/pkg/context"
 )
 
 // --- Data Structures ---
@@ -41,8 +43,7 @@ type Tallier struct {
 	FreshSecret kyber.Scalar
 }
 
-// DeterministicTagProof is the final, complete collection of proofs from the entire protocol,
-// acting as a public log of the work done by all talliers.
+// DeterministicTagProof is the final, complete collection of proofs from the entire protocol.
 type DeterministicTagProof struct {
 	Round1Bundles []*Round1Bundle
 	Round2Bundles []*PartialTagBundle
@@ -51,9 +52,7 @@ type DeterministicTagProof struct {
 // --- Main Orchestrator ---
 
 // GenerateDeterministicTags orchestrates the full two-round DDT protocol.
-// It takes initial ciphertexts and a set of talliers, and returns the final deterministic tags
-// along with a complete proof of the entire computation.
-func GenerateDeterministicTags(suite proof.Suite, initialC1s, initialC2s []kyber.Point, talliers []*Tallier) ([]kyber.Point, *DeterministicTagProof, error) {
+func GenerateDeterministicTags(ctx *context.OperationContext, suite proof.Suite, initialC1s, initialC2s []kyber.Point, talliers []*Tallier) ([]kyber.Point, *DeterministicTagProof, error) {
 	if len(initialC1s) == 0 {
 		return []kyber.Point{}, &DeterministicTagProof{}, nil
 	}
@@ -61,7 +60,6 @@ func GenerateDeterministicTags(suite proof.Suite, initialC1s, initialC2s []kyber
 	finalProof := &DeterministicTagProof{}
 
 	// --- ROUND 1: Additive Blinding ---
-	// The output of round 1 is the final blinded C2s and the history of public commitments.
 	round1OutputC2s, round1History, err := performRound1Chain(suite, initialC2s, talliers)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed during Round 1 processing: %w", err)
@@ -69,8 +67,7 @@ func GenerateDeterministicTags(suite proof.Suite, initialC1s, initialC2s []kyber
 	finalProof.Round1Bundles = round1History
 
 	// --- ROUND 2: Multiplicative Re-masking & Partial Decryption ---
-	// The C1 components are discarded.
-	_, finalTags, round2History, err := performRound2Chain(suite, initialC1s, round1OutputC2s, talliers)
+	_, finalTags, round2History, err := performRound2Chain(ctx, suite, initialC1s, round1OutputC2s, talliers)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed during Round 2 processing: %w", err)
 	}
@@ -116,29 +113,63 @@ func (t *Tallier) PerformRound1(suite proof.Suite) (*Round1Bundle, error) {
 	}, nil
 }
 
-// PerformRound2 performs the re-masking and partial decryption step for all ciphertexts.
-func (t *Tallier) PerformRound2(suite proof.Suite, prevC1s, prevC2s []kyber.Point) (*PartialTagBundle, error) {
+// round2Result is a private struct to hold the multiple return values from a single remasking operation.
+type round2Result struct {
+	newC1 kyber.Point
+	newC2 kyber.Point
+	proof *ZKPProof
+}
+
+// PerformRound2 performs the re-masking and proof generation step for all ciphertexts.
+func (t *Tallier) PerformRound2(ctx *context.OperationContext, suite proof.Suite, prevC1s, prevC2s []kyber.Point) (*PartialTagBundle, error) {
 	numCiphertexts := len(prevC1s)
 	if numCiphertexts != len(prevC2s) {
 		return nil, fmt.Errorf("input C1 and C2 slices must have the same length")
 	}
 
+	// The tallier's public commitment is the same for all proofs in this batch.
+	publicCommitment := suite.Point().Mul(t.FreshSecret, nil)
+
+	// Define the work to be done for a single ciphertext.
+	workerFunc := func(c1 kyber.Point, c2 kyber.Point) (round2Result, error) {
+		newC1, newC2 := t.remaskCiphertext(suite, c1, c2)
+		combinedProof, err := t.proveRound2(suite, publicCommitment, c1, c2, newC1, newC2)
+		if err != nil {
+			return round2Result{}, fmt.Errorf("failed to generate round 2 proof: %w", err)
+		}
+
+		return round2Result{
+			newC1: newC1,
+			newC2: newC2,
+			proof: combinedProof,
+		}, nil
+	}
+
+	type jobInput struct {
+		c1 kyber.Point
+		c2 kyber.Point
+	}
+	inputs := make([]jobInput, numCiphertexts)
+	for i := 0; i < numCiphertexts; i++ {
+		inputs[i] = jobInput{c1: prevC1s[i], c2: prevC2s[i]}
+	}
+
+	results, err := concurrency.Map(ctx, inputs, func(item jobInput) (round2Result, error) {
+		return workerFunc(item.c1, item.c2)
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	// The results are guaranteed to be in the same order as the inputs.
 	nextC1s := make([]kyber.Point, numCiphertexts)
 	nextC2s := make([]kyber.Point, numCiphertexts)
 	proofs := make([]*ZKPProof, numCiphertexts)
-
-	publicCommitment := suite.Point().Mul(t.FreshSecret, nil)
-
-	for i := 0; i < numCiphertexts; i++ {
-		// Perform the core transformation.
-		nextC1s[i], nextC2s[i] = t.remaskCiphertext(suite, prevC1s[i], prevC2s[i])
-
-		// Generate the single, combined proof for this transformation.
-		combinedProof, err := t.proveRound2(suite, publicCommitment, prevC1s[i], prevC2s[i], nextC1s[i], nextC2s[i])
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate round 2 proof for index %d: %w", i, err)
-		}
-		proofs[i] = combinedProof
+	for i, res := range results {
+		nextC1s[i] = res.newC1
+		nextC2s[i] = res.newC2
+		proofs[i] = res.proof
 	}
 
 	return &PartialTagBundle{
@@ -227,7 +258,7 @@ func performRound1Chain(suite proof.Suite, initialC2s []kyber.Point, talliers []
 }
 
 // performRound2Chain executes Round 2 for all talliers.
-func performRound2Chain(suite proof.Suite, initialC1s, initialC2s []kyber.Point, talliers []*Tallier) ([]kyber.Point, []kyber.Point, []*PartialTagBundle, error) {
+func performRound2Chain(ctx *context.OperationContext, suite proof.Suite, initialC1s, initialC2s []kyber.Point, talliers []*Tallier) ([]kyber.Point, []kyber.Point, []*PartialTagBundle, error) {
 	history := make([]*PartialTagBundle, len(talliers))
 	currentC1s := make([]kyber.Point, len(initialC1s))
 	for i, c1 := range initialC1s {
@@ -239,7 +270,7 @@ func performRound2Chain(suite proof.Suite, initialC1s, initialC2s []kyber.Point,
 	}
 
 	for i, tallier := range talliers {
-		bundle, err := tallier.PerformRound2(suite, currentC1s, currentC2s)
+		bundle, err := tallier.PerformRound2(ctx, suite, currentC1s, currentC2s)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -254,8 +285,7 @@ func performRound2Chain(suite proof.Suite, initialC1s, initialC2s []kyber.Point,
 }
 
 // VerifyDeterministicTagProof is the verification function.
-// It verifies the entire protocol execution from start to finish, ensuring end-to-end integrity.
-func VerifyDeterministicTagProof(suite proof.Suite, initialC1s, initialC2s []kyber.Point, talliers []*Tallier, fullProof *DeterministicTagProof) error {
+func VerifyDeterministicTagProof(ctx *context.OperationContext, suite proof.Suite, initialC1s, initialC2s []kyber.Point, talliers []*Tallier, fullProof *DeterministicTagProof) error {
 	// --- Verify Round 1 ---
 	// First, verify each tallier's proof of knowledge for their commitment.
 	for i, bundle := range fullProof.Round1Bundles {
@@ -286,7 +316,7 @@ func VerifyDeterministicTagProof(suite proof.Suite, initialC1s, initialC2s []kyb
 			return fmt.Errorf("mismatched tallier IDs between round 1 and 2 bundles at index %d", i)
 		}
 
-		err := VerifyRound2Bundle(suite, currentC1s, currentC2s, r1bundle.PublicCommitment, talliers[i].PublicKey, bundle)
+		err := VerifyRound2Bundle(ctx, suite, currentC1s, currentC2s, r1bundle.PublicCommitment, talliers[i].PublicKey, bundle)
 		if err != nil {
 			return fmt.Errorf("verification of Round 2 bundle for tallier %d failed: %w", i, err)
 		}
@@ -306,44 +336,49 @@ func VerifyRound1Bundle(suite proof.Suite, bundle *Round1Bundle) error {
 	if err := proof.HashVerify(suite, "Round1Knowledge", verifierS, bundle.ProofOfKnowledge.Proof); err != nil {
 		return fmt.Errorf("fresh secret proof for tallier %d failed: %w", bundle.TallierID, err)
 	}
-	// The integrity check (sum of C2s) is handled after
+	// The integrity check (sum of C2s) is after.
+	return nil
+}
+
+// verifySingleRound2Proof is a helper that contains the core logic for verifying one re-masking proof at a specific index.
+func verifySingleRound2Proof(suite proof.Suite, prevC1s, prevC2s []kyber.Point, publicCommitment, tallierPublicKey kyber.Point, bundle *PartialTagBundle, index int) error {
+	// Re-construct the predicate the prover used.
+	pred := proof.And(
+		proof.Rep("S", "s", "B"),
+		proof.Rep("K", "k", "B"),
+		proof.Rep("C1_new", "s", "C1_old"),
+		proof.Rep("C2_new", "s", "C2_old", "sk", "C1_old_neg"),
+	)
+
+	// The verifier constructs the public map from the information it has for this specific index.
+	public := map[string]kyber.Point{
+		"B":          suite.Point().Base(),
+		"S":          publicCommitment,
+		"K":          tallierPublicKey,
+		"C1_old":     prevC1s[index],
+		"C2_old":     prevC2s[index],
+		"C1_new":     bundle.UpdatedC1s[index],
+		"C2_new":     bundle.UpdatedC2s[index],
+		"C1_old_neg": suite.Point().Neg(prevC1s[index]),
+	}
+
+	verifier := pred.Verifier(suite, public)
+	if err := proof.HashVerify(suite, "Round2Combined", verifier, bundle.RemaskingProofs[index].Proof); err != nil {
+		return fmt.Errorf("combined proof for index %d failed for tallier %d: %w", index, bundle.TallierID, err)
+	}
 	return nil
 }
 
 // VerifyRound2Bundle checks the combined re-masking proof for each ciphertext from a tallier.
-func VerifyRound2Bundle(suite proof.Suite, prevC1s, prevC2s []kyber.Point, publicCommitment, tallierPublicKey kyber.Point, bundle *PartialTagBundle) error {
-	if len(prevC1s) != len(bundle.RemaskingProofs) || len(prevC2s) != len(bundle.RemaskingProofs) {
+func VerifyRound2Bundle(ctx *context.OperationContext, suite proof.Suite, prevC1s, prevC2s []kyber.Point, publicCommitment, tallierPublicKey kyber.Point, bundle *PartialTagBundle) error {
+	numProofs := len(bundle.RemaskingProofs)
+	if len(prevC1s) != numProofs || len(prevC2s) != numProofs {
 		return fmt.Errorf("mismatch in ciphertext and proof counts")
 	}
 
-	for i := 0; i < len(prevC1s); i++ {
-		proof2 := bundle.RemaskingProofs[i]
-
-		// Re-construct the predicate the prover used.
-		pred := proof.And(
-			proof.Rep("S", "s", "B"),
-			proof.Rep("K", "k", "B"),
-			proof.Rep("C1_new", "s", "C1_old"),
-			proof.Rep("C2_new", "s", "C2_old", "sk", "C1_old_neg"),
-		)
-
-		// The verifier must construct the public map from the information it has.
-		// It uses the PREVIOUS state and the bundle's claimed UPDATED state.
-		public := map[string]kyber.Point{
-			"B":          suite.Point().Base(),
-			"S":          publicCommitment,
-			"K":          tallierPublicKey,
-			"C1_old":     prevC1s[i],
-			"C2_old":     prevC2s[i],
-			"C1_new":     bundle.UpdatedC1s[i],
-			"C2_new":     bundle.UpdatedC2s[i],
-			"C1_old_neg": suite.Point().Neg(prevC1s[i]),
-		}
-
-		verifier := pred.Verifier(suite, public)
-		if err := proof.HashVerify(suite, "Round2Combined", verifier, proof2.Proof); err != nil {
-			return fmt.Errorf("combined proof for index %d failed for tallier %d: %w", i, bundle.TallierID, err)
-		}
+	workerFunc := func(index int, item *ZKPProof) error {
+		return verifySingleRound2Proof(suite, prevC1s, prevC2s, publicCommitment, tallierPublicKey, bundle, index)
 	}
-	return nil
+
+	return concurrency.ForEach(ctx, bundle.RemaskingProofs, workerFunc)
 }
