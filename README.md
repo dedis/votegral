@@ -21,6 +21,8 @@ benchmarking, and reproducibility.
   * [Getting Started](#getting-started)
     * [Prerequisites](#prerequisites)
     * [Installation and Basic Run](#installation-and-basic-run)
+      * [Docker](#docker)
+      * [Local](#local)
   * [Project Structure](#project-structure)
   * [Configuration](#configuration)
     * [Command Line Arguments](#command-line-arguments)
@@ -43,7 +45,16 @@ Follow these steps to get the simulation running on your local machine.
 
 ### Installation and Basic Run
 
-Setup on Ubuntu 24.04 (as of July 2025)
+#### Docker
+
+```bash
+docker build --no-cache -t votegral .
+docker run votegral
+```
+
+#### Local
+
+Setup tested on Ubuntu 24.04 (as of July 2025)
 
 1.  **Clone the Repository:**
     ```bash
@@ -64,7 +75,7 @@ Setup on Ubuntu 24.04 (as of July 2025)
     # Build Votegral
     cd cmd/simulation
     go build .
-    ./simulation --voters=100 --hw=Core
+    ./simulation --runs=1 --voters=100 --shuffle=BayerGroth --print-metrics
     ```
     To see all available options, run `./simulation --help`.
 
@@ -73,7 +84,7 @@ Setup on Ubuntu 24.04 (as of July 2025)
     - Only available on x86 and x64 architectures.
     
     ```bash
-    sudo apt-get update && sudo apt-get install build-essential cmake catch2 libgmp-dev
+    sudo apt-get update && sudo apt-get install build-essential cmake catch2 libgmp-dev python3
     cd prerequisites/anderspkd_groth-shuffle
     
     # Install Catch2 v2
@@ -83,7 +94,7 @@ Setup on Ubuntu 24.04 (as of July 2025)
     
     # Build BayerGroth Shuffle
     cd ../
-    cmake . -B build && cd build && make && make tests
+    cmake . -B build && cd build && make && make test
     ./tests.x # All Tests should pass
     
     # Copy custom BayerGroth Shuffle App
@@ -91,7 +102,7 @@ Setup on Ubuntu 24.04 (as of July 2025)
     
     # Run Votegral w/ BayerGroth Shuffle
     cd ../../../cmd/simulation/
-    ./simulation --voters 100 --runs 1 --shuffle bayergroth 
+    ./simulation --runs=1 --voters=100 --shuffle=BayerGroth --print-metrics
     ```
 
 ---
@@ -132,7 +143,7 @@ The simulation's behavior is controlled via command-line flags.
 | --ea-members    | uint64 | 4                | Number of Election Authority Members.                                         |
 | --system        | string | Mac              | System tag (`Mac`, `Kiosk`, `Pi`, `Xeon`) for logging and system-level logic. |
 | --hw            | string | Core             | [Hardware modes](#hardware-modes) (`Core`, `Disk`, `Peripherals`).            |
-| --shuffle       | string | Neff             | Type of Verifiable Shuffle (`Neff`, `BayerGroth`).                                 |
+| --shuffle       | string | Neff             | Type of Verifiable Shuffle (`Neff`, `BayerGroth`).                            |
 | --printer       | string | TM               | Name of the printer in CUPS if Peripheral is enabled.                         |
 | --cups-wait     | int    | 100              | Wait time (ms) for CUPS daemon to start for measurement.                      |
 | --pics          | string | "output/pics"    | Path for storing pictures of physical materials.                              |
