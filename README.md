@@ -36,14 +36,14 @@ benchmarking, and reproducibility.
 
 ## Getting Started
 
-Follow these steps to get the simulation running on your local machine.
-
 ### Prerequisites
 
 -   **Go**: Version [1.23.11](https://go.dev/dl/#go1.23.11) or later. You can download it from the [official Go website](https://go.dev/dl/#go1.23.11). Follow the [official installation instructions](https://go.dev/doc/install).
 -   **Git**: Required to clone the repository.
 
 ### Installation and Basic Run
+
+Votegral can be run inside a docker container or locally.
 
 #### Docker
 
@@ -63,9 +63,7 @@ Setup tested on Ubuntu 24.04 (as of July 2025)
     cd votegral
     ```
 
-2.  **Build and Run the Simulation:**
-    The `go build` command will automatically fetch all required dependencies. The following commands build the executable and run a default simulation with 100 voters in the fast, in-memory `Core` mode.
-
+2.  **Build and Run the Simulation:**  
     ```bash
     # Install Go (only if needed)
     wget https://go.dev/dl/go1.23.11.linux-amd64.tar.gz
@@ -76,12 +74,13 @@ Setup tested on Ubuntu 24.04 (as of July 2025)
     cd cmd/simulation
     go build .
     ./simulation --runs=1 --voters=100 --shuffle=BayerGroth --print-metrics
+    
+    # To see all available options
+    ./simulation --help
     ```
-    To see all available options, run `./simulation --help`.
-
-3.  **Enable BayerGroth Shuffle**
+    
+3.  **Run Votegral w/ BayerGroth Shuffle**  (x86 and x64 architectures only)  
     BayerGroth shuffle implementation is available in C++ thanks to [Anders Dalskov's repo](https://github.com/anderspkd/groth-shuffle).
-    - Only available on x86 and x64 architectures.
     
     ```bash
     sudo apt-get update && sudo apt-get install build-essential cmake catch2 libgmp-dev python3
