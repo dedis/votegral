@@ -143,26 +143,26 @@ The simulation's behavior is controlled via command-line flags.
 
 ### Command Line Arguments
 
-| Flag            | Type   | Default          | Description                                                                   |
-|-----------------|--------|------------------|-------------------------------------------------------------------------------|
-| --runs          | uint64 | 2                | Number of times to run the simulation.                                        |
-| --cores         | uint64 | 1                | Number of CPU cores (0 for All) - `1` for sequential run (w/ add. metrics)    |
-| --voters        | uint64 | 100              | Number of voters to simulate (registration + voting).                         |
-| --fake-creds    | uint64 | 1                | Number of fake credentials for each voter.                                    |
-| --ea-members    | uint64 | 4                | Number of Election Authority Members.                                         |
-| --system        | string | Mac              | System tag (`Mac`, `Kiosk`, `Pi`, `Xeon`) for logging and system-level logic. |
-| --hw            | string | Core             | [Hardware modes](#hardware-modes) (`Core`, `Disk`, `Peripherals`).            |
-| --shuffle       | string | Neff             | Type of Verifiable Shuffle (`Neff`, `BayerGroth`).                            |
-| --printer       | string | TM               | Name of the printer in CUPS if Peripheral is enabled.                         |
-| --cups-wait     | int    | 100              | Wait time (ms) for CUPS daemon to start for measurement.                      |
-| --pics          | string | "output/pics"    | Path for storing pictures of physical materials.                              |
-| --results       | string | "output/results" | Path for storing simulation results.                                          |
-| --temp          | string | "output/tmp/"    | Path for storing temporary files.                                             |
-| --print-metrics | string | false            | Whether to print detailed metrics tree at the end.                            |
-| --max-depth     | int    | 2                | Maximum depth of the metrics tree to print                                    |
-| --max-children  | int    | 10               | Maximum number of children to print for each node.                            |
-| --seed          | string | votegral         | Seed for deterministic random output.                                         |
-| --log-level     | string | info             | Set log level (`trace`, `debug`, `info`, `error`).                            |
+| Flag            | Type   | Default          | Description                                                                     |
+|-----------------|--------|------------------|---------------------------------------------------------------------------------|
+| --runs          | uint64 | 2                | Number of times to run the simulation.                                          |
+| --cores         | uint64 | 1                | Number of CPU cores (0 for All) - `1` for sequential run (w/ add. metrics)      |
+| --voters        | uint64 | 100              | Number of voters to simulate (registration + voting).                           |
+| --fake-creds    | uint64 | 1                | Number of fake credentials for each voter.                                      |
+| --ea-members    | uint64 | 4                | Number of Election Authority Members.                                           |
+| --system        | string | Local            | System tag (`Local`, `Kiosk`, `Pi`, `Xeon`) for logging and system-level logic. |
+| --hw            | string | Core             | [Hardware modes](#hardware-modes) (`Core`, `Disk`, `Peripherals`).              |
+| --shuffle       | string | Neff             | Type of Verifiable Shuffle (`Neff`, `BayerGroth`).                              |
+| --printer       | string | TM               | Name of the printer in CUPS if Peripheral is enabled.                           |
+| --cups-wait     | int    | 100              | Wait time (ms) for CUPS daemon to start for measurement.                        |
+| --pics          | string | "output/pics"    | Path for storing pictures of physical materials.                                |
+| --results       | string | "output/results" | Path for storing simulation results.                                            |
+| --temp          | string | "output/tmp/"    | Path for storing temporary files.                                               |
+| --print-metrics | string | false            | Whether to print detailed metrics tree at the end.                              |
+| --max-depth     | int    | 2                | Maximum depth of the metrics tree to print                                      |
+| --max-children  | int    | 10               | Maximum number of children to print for each node.                              |
+| --seed          | string | votegral         | Seed for deterministic random output.                                           |
+| --log-level     | string | info             | Set log level (`trace`, `debug`, `info`, `error`).                              |
 
 
 ### Hardware Modes
