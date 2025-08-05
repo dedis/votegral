@@ -43,7 +43,7 @@ benchmarking, and reproducibility.
 
 ### Installation and Basic Run
 
-Votegral can be run inside a docker container or locally.
+Votegral can be built and run inside a docker container or locally.
 
 #### Docker
 
