@@ -48,8 +48,18 @@ Votegral can be built and run inside a docker container or locally.
 #### Docker
 
 ```bash
+# Clone the Repository
+sudo apt-get update && sudo apt-get install git
+git clone https://github.com/dedis/votegral.git
+
+# Build docker container
 docker build --no-cache -t votegral .
+
+# Run votegral
 docker run votegral
+
+# Run votegral w/ arguments
+docker run votegral --runs=1 --voters=100 --shuffle=BayerGroth --print-metrics
 ```
 
 #### Local
