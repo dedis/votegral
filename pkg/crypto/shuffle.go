@@ -36,7 +36,7 @@ func NewShuffler(shuffler string) Shuffler {
 	switch strings.ToLower(shuffler) {
 	case "neff":
 		return &NeffShuffle{}
-	case "groth":
+	case "bayergroth":
 		_, err := os.Stat(CppToolExecutable)
 		if os.IsNotExist(err) {
 			panic(fmt.Errorf("c++ Groth shuffle tool not found at %s", CppToolExecutable))
