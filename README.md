@@ -83,7 +83,7 @@ Setup tested on Ubuntu 24.04 (as of July 2025)
     # Build Votegral
     cd cmd/simulation
     go build .
-    ./simulation --runs=1 --voters=100 --shuffle=BayerGroth --print-metrics
+    ./simulation --runs=1 --voters=100 --print-metrics
     
     # To see all available options
     ./simulation --help
