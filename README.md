@@ -73,7 +73,7 @@ Setup on Ubuntu 24.04 (as of July 2025)
     - Only available on x86 and x64 architectures.
     
     ```bash
-    sudo apt-get update && sudo apt-get install build-essential cmake catch2
+    sudo apt-get update && sudo apt-get install build-essential cmake catch2 libgmp-dev
     cd prerequisites/anderspkd_groth-shuffle
     
     # Install Catch2 v2
@@ -90,11 +90,11 @@ Setup on Ubuntu 24.04 (as of July 2025)
     cp ./shuffle_app ../../../cmd/simulation/
     
     # Run Votegral w/ BayerGroth Shuffle
+    cd ../../../cmd/simulation/
     ./simulation --voters 100 --runs 1 --shuffle bayergroth 
     ```
 
 ---
-
 
 ## Project Structure
 
