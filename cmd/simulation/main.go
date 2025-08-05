@@ -84,7 +84,7 @@ func printSummary(cfg *config.Config, result metrics.AnalysisResult) {
 	fmt.Printf("%*s\n", -totalWidth, fmt.Sprintf("%*s", (totalWidth+len(title))/2, title))
 	fmt.Println(strings.Repeat("-", totalWidth))
 	fmt.Printf(" Config: %d runs, %d voters, %d fakes\n", cfg.Runs, cfg.Voters, cfg.FakeCredentialCount)
-	fmt.Printf("         %s hw, %s shuffle\n", cfg.HardwareType, cfg.ShuffleType)
+	fmt.Printf("         %s hw, %s shuffle, %d cores\n", cfg.HardwareType, cfg.ShuffleType, cfg.Cores)
 	fmt.Println(border)
 
 	// Total time
