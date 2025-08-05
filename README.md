@@ -168,7 +168,7 @@ The simulation supports two verifiable shuffle implementations, configured via t
 #### Metrics
 
 ```bash
-./simulation/ --hw Disk --voters 2 --fake-creds 1 --runs 1  --print-metrics --max-depth -1 --max-children -1
+./simulation --hw Disk --voters 2 --fake-creds 1 --runs 1  --print-metrics --max-depth -1 --max-children -1
 ```
 ```
 --- Measurement Tree (Depth <= -1) ---
